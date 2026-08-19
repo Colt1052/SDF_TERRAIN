@@ -104,9 +104,10 @@ namespace SDFTerrain.Terrain
         /// <summary>
         /// Applies a brush stroke to the field this renderer was initialized with: persists the
         /// resulting edit, marks every chunk the stroke's footprint overlaps dirty (creating new
-        /// chunks if the stroke extends beyond existing coverage), and rebuilds them. Per
-        /// CLAUDE.md's "SDF is the source of truth" rule, the brush never touches a mesh/collider
-        /// directly — it mutates the field and triggers a derive of only the affected chunks.
+        /// chunks only for build brushes; delete brushes don't expand into empty space), and
+        /// rebuilds them. Per CLAUDE.md's "SDF is the source of truth" rule, the brush never
+        /// touches a mesh/collider directly — it mutates the field and triggers a derive of only
+        /// the affected chunks.
         /// </summary>
         public void ApplyBrush(TerrainBrush brush, Vector2 localPosition)
         {
@@ -118,25 +119,27 @@ namespace SDFTerrain.Terrain
             TerrainEdit edit = brush.ToEdit(localPosition);
             _field.ApplyEdit(edit);
 
-            // Mark all chunks whose bounding box overlaps the brush footprint dirty.
-            // ChunksInRect creates new chunks if the brush extends beyond existing coverage.
+            // Only build brushes create new chunks. Delete brushes should not expand the
+            // chunk grid into empty space — they only affect existing chunks.
+            bool createChunks = brush.Mode == BrushMode.Add;
+
             float minX = localPosition.x - brush.Radius;
             float maxX = localPosition.x + brush.Radius;
             float minY = localPosition.y - brush.Radius;
             float maxY = localPosition.y + brush.Radius;
 
-            MarkDirtyRect(minX, maxX, minY, maxY);
+            MarkDirtyRect(minX, maxX, minY, maxY, createChunks);
 
             RebuildDirtyChunks();
         }
 
         /// <summary>
         /// Marks every chunk whose bounding box overlaps the given rectangle dirty.
-        /// Creates new chunks if the rectangle extends beyond existing coverage.
+        /// Optionally creates new chunks if the rectangle extends beyond existing coverage.
         /// </summary>
-        private void MarkDirtyRect(float minX, float maxX, float minY, float maxY)
+        private void MarkDirtyRect(float minX, float maxX, float minY, float maxY, bool createChunks)
         {
-            _chunkGrid.ChunksInRect(minX, maxX, minY, maxY, _rectBuffer);
+            _chunkGrid.ChunksInRect(minX, maxX, minY, maxY, _rectBuffer, createChunks);
             for (int i = 0; i < _rectBuffer.Count; i++)
             {
                 int chunkIndex = _rectBuffer[i];

@@ -22,8 +22,15 @@ namespace SDFTerrain.Terrain
         private readonly List<TerrainEdit> _edits = new List<TerrainEdit>();
 
         private ChunkGrid _chunkGrid;
-        private Dictionary<int, List<int>> _editsByChunk;
-        private readonly List<int> _chunkMembershipBuffer = new List<int>();
+        // Keyed by packed (col, row) so edits can be indexed for grid cells even when no
+        // chunk object exists (e.g., delete brushes outside the current grid).
+        private Dictionary<long, List<int>> _editsByChunkKey;
+
+        /// <summary>Packs (col, row) into a unique long key, matching ChunkGrid.MakeKey.</summary>
+        static long PackKey(int col, int row)
+        {
+            return (((long)col) << 32) | ((long)row & 0xffffffffL);
+        }
 
         public TerrainField(float baseRadius)
             : this(baseRadius, seed: 0, TerrainNoiseSettings.None)
@@ -63,12 +70,12 @@ namespace SDFTerrain.Terrain
             }
 
             _chunkGrid = chunkGrid;
-            _editsByChunk = new Dictionary<int, List<int>>();
+            _editsByChunkKey = new Dictionary<long, List<int>>();
 
-            // Initialize entries for all existing chunks.
+            // Initialize entries for all existing chunks, keyed by packed (col, row).
             foreach (TerrainChunk chunk in chunkGrid.AllChunks)
             {
-                _editsByChunk[chunk.Index] = new List<int>();
+                _editsByChunkKey[PackKey(chunk.Col, chunk.Row)] = new List<int>();
             }
 
             for (int i = 0; i < _edits.Count; i++)
@@ -126,7 +133,7 @@ namespace SDFTerrain.Terrain
         /// </summary>
         public float Sample(Vector2 localPosition, int chunkIndex)
         {
-            if (_editsByChunk == null)
+            if (_editsByChunkKey == null)
             {
                 throw new InvalidOperationException("Sample(Vector2, int) requires EnableChunkIndexing to have been called first.");
             }
@@ -134,7 +141,10 @@ namespace SDFTerrain.Terrain
             float angle = Core.RadialMath.AngleOf(localPosition);
             float distance = localPosition.magnitude - SurfaceRadiusAt(angle);
 
-            if (!_editsByChunk.TryGetValue(chunkIndex, out List<int> editIndices))
+            TerrainChunk chunk = _chunkGrid.GetChunk(chunkIndex);
+            long key = PackKey(chunk.Col, chunk.Row);
+
+            if (!_editsByChunkKey.TryGetValue(key, out List<int> editIndices))
             {
                 // Chunk has no indexed edits — return base field value.
                 return distance;
@@ -151,11 +161,12 @@ namespace SDFTerrain.Terrain
         }
 
         /// <summary>Applies and persists a modification. Never mutates a mesh or collider directly.</summary>
+        /// <param name="edit">The edit to apply.</param>
         public void ApplyEdit(TerrainEdit edit)
         {
             _edits.Add(edit);
 
-            if (_editsByChunk != null)
+            if (_editsByChunkKey != null)
             {
                 IndexEdit(_edits.Count - 1, edit);
             }
@@ -172,18 +183,27 @@ namespace SDFTerrain.Terrain
             float brushMinY = edit.LocalPosition.y - edit.Radius;
             float brushMaxY = edit.LocalPosition.y + edit.Radius;
 
-            _chunkGrid.ChunksInRect(brushMinX, brushMaxX, brushMinY, brushMaxY, _chunkMembershipBuffer);
+            float chunkSize = _chunkGrid.ChunkSize;
+            float gridMinX = -(_chunkGrid.Cols * chunkSize) / 2f;
+            float gridMinY = -(_chunkGrid.Rows * chunkSize) / 2f;
 
-            for (int i = 0; i < _chunkMembershipBuffer.Count; i++)
+            int colStart = Mathf.FloorToInt((brushMinX - gridMinX) / chunkSize);
+            int colEnd = Mathf.CeilToInt((brushMaxX - gridMinX) / chunkSize) - 1;
+            int rowStart = Mathf.FloorToInt((brushMinY - gridMinY) / chunkSize);
+            int rowEnd = Mathf.CeilToInt((brushMaxY - gridMinY) / chunkSize) - 1;
+
+            for (int row = rowStart; row <= rowEnd; row++)
             {
-                int chunkIndex = _chunkMembershipBuffer[i];
-                if (!_editsByChunk.TryGetValue(chunkIndex, out List<int> list))
+                for (int col = colStart; col <= colEnd; col++)
                 {
-                    // Chunk was dynamically created after EnableChunkIndexing — initialize it.
-                    list = new List<int>();
-                    _editsByChunk[chunkIndex] = list;
+                    long key = PackKey(col, row);
+                    if (!_editsByChunkKey.TryGetValue(key, out List<int> list))
+                    {
+                        list = new List<int>();
+                        _editsByChunkKey[key] = list;
+                    }
+                    list.Add(editIndex);
                 }
-                list.Add(editIndex);
             }
         }
 
@@ -227,9 +247,9 @@ namespace SDFTerrain.Terrain
             }
 
             // Second pass: remap chunk indices and remove references to pruned edits.
-            if (_editsByChunk != null && pruned > 0)
+            if (_editsByChunkKey != null && pruned > 0)
             {
-                foreach (List<int> chunkList in _editsByChunk.Values)
+                foreach (List<int> chunkList in _editsByChunkKey.Values)
                 {
                     int w = 0;
                     for (int r = 0; r < chunkList.Count; r++)
@@ -257,9 +277,9 @@ namespace SDFTerrain.Terrain
         {
             _edits.Clear();
 
-            if (_editsByChunk != null)
+            if (_editsByChunkKey != null)
             {
-                foreach (List<int> list in _editsByChunk.Values)
+                foreach (List<int> list in _editsByChunkKey.Values)
                 {
                     list.Clear();
                 }
@@ -278,9 +298,9 @@ namespace SDFTerrain.Terrain
             _edits.AddRange(edits);
 
             // Rebuild chunk indexing for the new edits, if indexing is active.
-            if (_editsByChunk != null)
+            if (_editsByChunkKey != null)
             {
-                foreach (List<int> list in _editsByChunk.Values)
+                foreach (List<int> list in _editsByChunkKey.Values)
                 {
                     list.Clear();
                 }

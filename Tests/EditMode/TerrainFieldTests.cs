@@ -417,11 +417,42 @@ namespace SDFTerrain.Tests
             var grid = new ChunkGrid(10f, chunkSize: 5f);
             field.EnableChunkIndexing(grid);
 
-            // Apply an edit far outside the original grid — this creates a new chunk
+            // Apply an edit far outside the original grid — indexed by packed key,
+            // no chunk is created by IndexEdit (chunk creation happens in the renderer).
             Vector2 farPosition = new Vector2(50f, 50f);
             field.ApplyEdit(new TerrainEdit(farPosition, radius: 3f, isAdditive: true));
 
-            // The edit should be indexed to the dynamically created chunk
+            // The edit should be indexed correctly even though no chunk was created.
+            // GetChunkAt creates the chunk; the edit should already be indexed by its key.
+            TerrainChunk newChunk = grid.GetChunkAt(farPosition);
+            float indexed = field.Sample(farPosition, newChunk.Index);
+            float full = field.Sample(farPosition);
+
+            Assert.AreEqual(full, indexed, 1e-5f);
+        }
+
+        [Test]
+        public void ChunkIndexedSample_EditOutsideGrid_IndexedByPackedKey()
+        {
+            // Verify that edits applied outside the grid are indexed by packed (col, row)
+            // so that a later-created chunk sees the edit in its index.
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            int initialChunkCount = grid.ChunkCount;
+
+            // Apply a delete edit far outside the grid — should not create chunks
+            Vector2 farPosition = new Vector2(50f, 50f);
+            field.ApplyEdit(new TerrainEdit(farPosition, radius: 3f, isAdditive: true));
+
+            // IndexEdit should not create chunks (it indexes by packed key only)
+            Assert.AreEqual(initialChunkCount, grid.ChunkCount);
+
+            // Now create a build edit at the same position — creates a chunk
+            field.ApplyEdit(new TerrainEdit(farPosition, radius: 3f, isAdditive: false));
+
+            // Get the chunk and verify chunk-indexed sample matches full scan
             TerrainChunk newChunk = grid.GetChunkAt(farPosition);
             float indexed = field.Sample(farPosition, newChunk.Index);
             float full = field.Sample(farPosition);

@@ -215,11 +215,12 @@ namespace SDFTerrain.Terrain
 
         /// <summary>
         /// Appends the index of every chunk whose bounding box overlaps the given rectangle to
-        /// <paramref name="result"/> (cleared first). Creates new chunks if the rectangle extends
-        /// beyond the current chunk coverage. Computes the overlapping column/row range directly —
-        /// no iteration over all chunks.
+        /// <paramref name="result"/> (cleared first). By default creates new chunks if the
+        /// rectangle extends beyond the current chunk coverage; set <paramref name="createChunks"/>
+        /// to false to return only existing chunks. Computes the overlapping column/row range
+        /// directly — no iteration over all chunks.
         /// </summary>
-        public void ChunksInRect(float minX, float maxX, float minY, float maxY, List<int> result)
+        public void ChunksInRect(float minX, float maxX, float minY, float maxY, List<int> result, bool createChunks = true)
         {
             result.Clear();
 
@@ -232,8 +233,16 @@ namespace SDFTerrain.Terrain
             {
                 for (int col = colStart; col <= colEnd; col++)
                 {
-                    TerrainChunk chunk = GetOrCreateChunkAtGrid(col, row);
-                    result.Add(chunk.Index);
+                    long key = MakeKey(col, row);
+                    if (_chunks.TryGetValue(key, out TerrainChunk chunk))
+                    {
+                        result.Add(chunk.Index);
+                    }
+                    else if (createChunks)
+                    {
+                        chunk = CreateChunk(col, row);
+                        result.Add(chunk.Index);
+                    }
                 }
             }
         }

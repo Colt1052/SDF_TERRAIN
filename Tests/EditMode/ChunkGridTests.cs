@@ -417,5 +417,33 @@ namespace SDFTerrain.Tests
 
             Assert.AreSame(chunk1, chunk2);
         }
+
+        [Test]
+        public void ChunksInRect_OutOfBounds_NoCreate_ReturnsEmpty()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            var result = new List<int>();
+
+            // Rect far outside original grid, but createChunks = false
+            grid.ChunksInRect(20f, 30f, 20f, 30f, result, createChunks: false);
+
+            Assert.AreEqual(0, result.Count);
+            // Grid should be unchanged
+            Assert.AreEqual(4, grid.ChunkCount);
+        }
+
+        [Test]
+        public void ChunksInRect_PartialOutOfBounds_NoCreate_ReturnsExistingOnly()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            var result = new List<int>();
+
+            // Rect overlapping both existing and out-of-bounds regions
+            grid.ChunksInRect(0f, 25f, 0f, 25f, result, createChunks: false);
+
+            // Should return only existing chunks, not create new ones
+            Assert.Greater(result.Count, 0);
+            Assert.AreEqual(4, grid.ChunkCount); // no new chunks created
+        }
     }
 }

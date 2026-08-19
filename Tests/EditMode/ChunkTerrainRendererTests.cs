@@ -267,6 +267,59 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(sampled, indexedSample, 1e-5f);
         }
 
+        [Test]
+        public void ApplyBrush_Remove_OutsideOriginalGrid_NoChunksCreated()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            int initialChunkCount = grid.ChunkCount;
+
+            // Delete brush far outside the planet's bounding box
+            Vector2 farPosition = new Vector2(50f, 50f);
+            var brush = new TerrainBrush(BrushMode.Remove, radius: 3f);
+            renderer.ApplyBrush(brush, farPosition);
+
+            // No new chunks should have been created
+            Assert.AreEqual(initialChunkCount, grid.ChunkCount);
+
+            // The edit should still be persisted on the field
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void ApplyBrush_RemoveThenAdd_OutsideOriginalGrid_RenderCorrectly()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            Vector2 farPosition = new Vector2(50f, 50f);
+
+            // First, delete in empty space — should not create chunks
+            var deleteBrush = new TerrainBrush(BrushMode.Remove, radius: 3f);
+            renderer.ApplyBrush(deleteBrush, farPosition);
+            Assert.AreEqual(4, grid.ChunkCount); // original grid only
+
+            // Then, build at the same position — should create chunks and render
+            var buildBrush = new TerrainBrush(BrushMode.Add, radius: 3f);
+            renderer.ApplyBrush(buildBrush, farPosition);
+
+            // New chunk(s) should exist
+            Assert.Greater(grid.ChunkCount, 4);
+
+            // Full-scan sample and chunk-indexed sample should agree
+            float fullSample = field.Sample(farPosition);
+            TerrainChunk newChunk = grid.GetChunkAt(farPosition);
+            float indexedSample = field.Sample(farPosition, newChunk.Index);
+            Assert.AreEqual(fullSample, indexedSample, 1e-5f);
+        }
+
         Mesh GetChunkMesh(ChunkTerrainRenderer renderer, TerrainChunk chunk)
         {
             foreach (Transform child in renderer.transform)
