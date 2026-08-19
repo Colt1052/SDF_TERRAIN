@@ -1,0 +1,1384 @@
+# TASKS.md
+
+# 2D Planetoid Sandbox — Development Tasks
+
+## Development Rules
+
+Every task should follow these rules:
+
+* Complete only one task (or one tightly related group of tasks) per change.
+* Keep pull requests and commits small.
+* Never mix refactoring with new features.
+* Maintain a runnable project after every task.
+* Do not introduce TODOs without creating a corresponding task.
+* Do not leave the project in a broken state.
+
+---
+
+# Definition of Done
+
+A task is complete when:
+
+* Code compiles without warnings.
+* Existing tests pass.
+* New functionality has automated tests where practical.
+* Public APIs are documented.
+* No unnecessary allocations occur in update loops.
+* No new linter or analyzer warnings are introduced.
+* The feature is demonstrated in a small test scene if applicable.
+
+---
+
+# Testing Rules
+
+Every system should have at least one of:
+
+* Unit tests
+* Integration tests
+* Simulation tests
+* Debug visualization
+
+Whenever possible:
+
+* Test behavior instead of implementation.
+* Prefer deterministic tests.
+* Avoid tests that depend on timing.
+
+---
+
+# Debug Visualization
+
+Every simulation system should expose debug visualization.
+
+Examples:
+
+* Density field
+* Chunk boundaries
+* Mesh outlines
+* Collision polygons
+* Gravity vectors
+* Planet influence
+* Wind vectors
+* Pressure maps
+* Ore generation
+* Cave generation
+
+Visualization is considered part of the implementation.
+
+---
+
+# Performance Rules
+
+Avoid:
+
+* Per-frame allocations
+* LINQ in update loops
+* Reflection during gameplay
+* Full planet rebuilds
+
+Prefer:
+
+* Object pooling
+* Dirty updates
+* Chunk-local operations
+* Burst-compatible code
+* Native collections where appropriate
+
+---
+
+# PHASE 1 — Foundation
+
+## 1. Project structure ✅ DONE
+
+* Create assembly definitions
+* Create folder hierarchy
+* Create namespace conventions
+* Configure analyzers
+* Configure editor settings
+
+Acceptance:
+
+* Clean project structure
+* No compile warnings
+
+Notes: `Runtime/SDF_Terrain.Runtime.asmdef` (rootNamespace `SDFTerrain`) and
+`Tests/SDF_Terrain.Tests.asmdef` (rootNamespace `SDFTerrain.Tests`, Editor-only,
+references Runtime asmdef + NUnit/TestRunner) created. Folder hierarchy matches
+ARCHITECTURE.md §8: `Runtime/{Core,Planet,Terrain,Meshing}`,
+`Tests/{EditMode,PlayMode}`, `Scripts/Debug`. Analyzer/editor-settings config
+deferred — no analyzer ruleset exists elsewhere in the project to mirror
+(see ARCHITECTURE.md §9 risk table); revisit if/when one is introduced.
+No code exists yet, so "no compile warnings" is vacuously true; asmdef JSON
+validity checked directly (no Unity CLI available in this environment) —
+compile correctness should be confirmed by opening the Unity editor.
+
+---
+
+## 2. Core math library ✅ DONE
+
+Implement:
+
+* Planet coordinates
+* Local coordinate conversions
+* Radial vectors
+* Utility math
+
+Tests:
+
+* Coordinate conversions
+* Precision
+* Edge cases
+
+Notes: `RadialMath` (angle wrap, angle-of, position-at, surface normal),
+`PlanetCoordinates` (world/local/radial conversions, gravity direction),
+`SeededRandom` (xorshift32 PRNG, the only permitted randomness source per
+CLAUDE.md — never `UnityEngine.Random` in generation code) added under
+`Runtime/Core/`, all static/pure or allocation-free structs. EditMode tests
+in `Tests/EditMode/` cover angle wrapping edge cases (negative, >2π),
+round-trip conversions, zero-radius/zero-seed edge cases, and determinism
+(same seed → identical sequence). Verification limited to structural/syntax
+review — no Unity CLI available in this environment; running the Test Runner
+in-editor is the outstanding verification step for this and Task 1.
+
+---
+
+## 3. Planet component ✅ DONE
+
+Create:
+
+Planet
+
+Contains:
+
+* Radius
+* Seed
+* Gravity
+* Transform
+* Settings
+
+Tests:
+
+* Construction
+* Serialization
+* Validation
+
+Notes: `PlanetSettings` (ScriptableObject: radius range, density, gravity
+strength, optional seed override, `OnValidate` clamping) and `Planet` (thin
+MonoBehaviour: `Radius`/`Seed`/`GravityStrength`/`Settings`/`Center`,
+validated via `Initialize`, throws on null settings/non-positive radius/
+negative gravity) added under `Runtime/Planet/`. `PlanetManager` added as a
+plain C# class (no MonoBehaviour) — `Register`/`Unregister`/`GetPlanetAt`/
+`AllPlanets`, nearest-by-surface-distance lookup (accounts for differing
+planet radii, not just center distance). EditMode tests cover Planet
+construction/validation (including seed-override precedence) and
+PlanetManager multi-planet register/duplicate-register/unregister/lookup
+including differing-radius lookup correctness. Serialization itself is
+Unity's built-in `[SerializeField]` mechanism — no custom serialization code
+was needed; verified structurally only, no Unity CLI available here.
+
+---
+
+## 4. Planet manager ✅ DONE
+
+Implement:
+
+* Registration
+* Lookup
+* Lifetime
+* Update ordering
+
+Tests:
+
+* Multiple planets
+* Removal
+* Spawn/despawn
+
+Notes: Built on the `PlanetManager` class from Task 3. Added a shared
+`PlanetManager.Instance` (lazy-initialized static) and wired `Planet.OnEnable`/
+`OnDisable` to auto-register/unregister — this is the "lifetime" and
+"spawn/despawn" requirement, so planets track their own lifecycle without a
+separate manual registration step. "Update ordering" is defined as
+registration order via `AllPlanets` (first registered, first processed) —
+sufficient for now since no system yet consumes it; revisit if a future
+system needs a different ordering policy. Tests that need isolation construct
+their own `new PlanetManager()` (as in Task 3's PlanetManagerTests); new
+tests in PlanetTests.cs cover auto-register on enable and auto-unregister on
+disable against the shared instance. Verified structurally only — no Unity
+CLI available here.
+
+---
+
+# PHASE 2 — Terrain
+
+## 5. SDF data structure ✅ DONE
+
+Create:
+
+* Signed distance storage
+* Sampling
+* Modification
+* Serialization interface
+
+Tests:
+
+* Sampling accuracy
+* Bounds
+* Modification
+
+Notes: `TerrainField` (`Runtime/Terrain/`) is the authoritative SDF: base
+shape is a perfect sphere (`|localPos| - radius`, matching generation order —
+noise/layers/caves land in later tasks), with persisted `TerrainEdit`
+modifications (circular smoothstep-falloff brushes, additive=dig/
+subtractive=build) summed on top at sample time. Only the sparse edit list
+is stored/serializable (`[System.Serializable] struct TerrainEdit`,
+`LoadEdits`/`Edits`) — the base field is always regenerated from
+`Planet.Radius`, per SCOPE.md "persist only modifications." Dense/chunked
+sample storage is deferred to Task 6 (Chunk system); this task only
+establishes the field abstraction and edit accumulation. Tests cover
+sampling at center/surface/outside/inside, additive vs. subtractive edit
+direction, brush radius falloff-to-zero at the boundary, out-of-range edits
+having no effect, clear/load/replace semantics, and overlapping edits
+accumulating. Verified structurally only — no Unity CLI available here.
+
+---
+
+## 6. Chunk system ✅ DONE
+
+Implement:
+
+* Chunk creation
+* Chunk indexing
+* Neighbor lookup
+* Dirty tracking
+
+Tests:
+
+* Chunk lookup
+* Neighbor correctness
+* Dirty propagation
+
+Notes: `TerrainChunk` (index, angular range, dirty flag) and `ChunkGrid`
+(`Runtime/Terrain/`) added, dividing a planet's circumference into a fixed
+number of equal angular slices (per ARCHITECTURE.md's angular/radial
+chunking decision). `GetChunkAt(angle)` indexes by wrapped angle;
+`GetNextChunk`/`GetPreviousChunk` wrap correctly across the 0/2π seam.
+Chunks start dirty (so a fresh planet always builds its initial mesh);
+`MarkDirtyAt`/`DirtyChunks()`/`ClearAllDirty` drive propagation. Chunk
+density-sample storage, mesh, and collider ownership are deferred to Meshing/
+Collision tasks (7, 9, 10) — this task only establishes indexing and dirty
+state, consistent with ARCHITECTURE.md's chunk shape being finalized once
+Marching Squares (Task 9) lands. Tests cover out-of-range lookup, angle
+wrapping (including negative angles and the just-below-2π boundary), seam
+wraparound for next/previous, full-circle coverage without gaps/overlap, and
+dirty-set correctness. Verified structurally only — no Unity CLI available
+here.
+
+---
+
+## 7. Procedural planet generator ✅ DONE
+
+Generate:
+
+* Perfect sphere
+
+Tests:
+
+* Radius
+* Continuity
+* Surface accuracy
+
+Notes: `PlanetGenerator.GenerateBaseShape(radius, seed)` (`Runtime/Terrain/`)
+added as a static, stateless pipeline entry point producing a `TerrainField`
+whose base shape is a perfect sphere — the first stage of the generation
+order in SCOPE.md/CLAUDE.md (large-scale shape before terrain height noise,
+layers, caves, ore, materials, vegetation, entities). The `seed` parameter is
+threaded through and consumed via `SeededRandom` (unused by this stage) so
+Task 8 (terrain noise) can extend the pipeline without changing the call
+site or breaking determinism guarantees. Tests cover radius matching,
+surface continuity around the full circle (360 sample points sit on the
+zero-crossing), zero initial edits, and same-input determinism. Verified
+structurally only — no Unity CLI available here.
+
+---
+
+## 8. Terrain noise ✅ DONE
+
+Add:
+
+* Fractal noise
+* Ridged noise
+* Domain warp
+
+Tests:
+
+* Deterministic generation
+* Seed reproducibility
+
+Notes: `TerrainNoiseSettings` (immutable readonly struct: amplitude,
+frequency, octaves, persistence, lacunarity, ridged flag, warp
+strength/frequency) and `TerrainNoise.SampleHeight(angle, seed, settings)`
+(`Runtime/Terrain/`) added. Noise is built from summed sine harmonics with
+integer frequencies rather than grid-based Perlin — `sin(k * angle + phase)`
+is exactly periodic over 2π for integer k, so the sum is inherently seamless
+around the planet's circumference with no special-cased wrap logic. Ridged
+mode takes `1 - |sin(...)|` per octave and re-centers the result around zero
+so it composes with fractal noise the same way. Domain warp perturbs the
+sampled angle before evaluating the fractal/ridged sum. `TerrainField` grew
+a `(radius, seed, noiseSettings)` constructor and `SurfaceRadiusAt(angle)`;
+`Sample()` now converts the query position to angle and looks up the noisy
+surface radius there instead of the constant base radius. `PlanetGenerator`
+gained a `GenerateBaseShape(radius, seed, noiseSettings)` overload; the
+existing 2-arg overload is preserved and forwards `TerrainNoiseSettings.None`
+so Task 7's tests are unaffected. Tests cover zero-amplitude no-op,
+determinism (same seed+angle), seed variation, amplitude bounds, seam
+continuity across angle 0/2π (for both raw noise and through
+`TerrainField.SurfaceRadiusAt`), and that ridged vs. fractal differ.
+Verified structurally only — no Unity CLI available here.
+
+---
+
+## 9. Terrain meshing ✅ DONE
+
+Implement:
+
+Marching Squares
+
+Outputs:
+
+* Mesh
+* Normals
+* UVs
+
+Tests:
+
+* Small synthetic fields
+* Closed loops
+* Ambiguous cases
+
+Notes: `MarchingSquaresMesher.Generate(samples, cellSize, origin, uvScale)`
+and `MeshData` (plain vertex/triangle/normal/UV lists, no `UnityEngine.Mesh`
+dependency) added under `Runtime/Meshing/`. Pure function of its inputs —
+no dependency on `TerrainField`/`Planet`, per ARCHITECTURE.md's "pure
+function of input samples" design — so it's testable against small
+synthetic `float[,]` grids without any planet/chunk machinery. All 16
+Marching Squares cases implemented via edge interpolation; ambiguous saddle
+cases (5 and 10) are resolved by splitting into two disjoint triangles
+(documented in the class doc-comment as a known simplification — can leave a
+thin diagonal gap in checkerboard input, acceptable given expected chunk
+resolution relative to terrain feature size). Normals are currently uniform
+`Vector3.back` (flat 2D quad), since true smooth normals depend on gradient
+sampling — deferred, no task currently calls for curved-surface normals in
+2D. Tests cover null/invalid-arg guards, fully-empty and fully-solid grids,
+single-corner and half-solid cases, vertex bounds/origin-offset correctness,
+array-length consistency across vertices/normals/UVs, and both ambiguous
+saddle cases. Converting `MeshData` into an actual `UnityEngine.Mesh` and
+wiring it to a renderer is Task 11. Verified structurally only — no Unity
+CLI available here.
+
+---
+
+## 10. Collider generation ✅ DONE
+
+Generate:
+
+* PolygonCollider2D
+
+Tests:
+
+* Collider validity
+* No self intersections
+
+Notes: `ColliderContourBuilder.BuildContours(meshData)` (`Runtime/Meshing/`)
+added as a pure function extracting closed boundary polygon loops from
+triangulated `MeshData` — no dependency on `PolygonCollider2D` or any
+scene/component, matching the pure-function precedent set by
+`MarchingSquaresMesher` in Task 9, and keeping the algorithmic core testable
+without a live Unity object. Works by counting directed triangle edges: an
+edge shared by two adjacent triangles is traversed once in each direction and
+cancels, leaving only true boundary edges, which are then stitched
+start-to-end into one or more closed loops (handles multiple disjoint solid
+regions, e.g. a chunk with two separate landmasses, by producing one loop
+per region). `TerrainColliderBuilder.Apply(meshData, collider)` is a thin
+wrapper that feeds the built contours to `PolygonCollider2D.pathCount`/
+`SetPath` — kept as a separate file so the contour math has zero Unity
+component coupling. Tests cover null-arg guard, single filled cell (4-point
+quad loop), a fully-filled multi-cell grid (verifying shared interior edges
+between adjacent cells correctly cancel, leaving only the outer 4-point
+boundary), a half-solid grid, an empty mesh (no contours), loop closure with
+no repeated points (no self-intersection), and two disjoint filled regions
+producing two separate loops. Verified structurally only — no Unity CLI
+available here; confirming `PolygonCollider2D.SetPath` accepts these paths
+without warnings is the outstanding in-editor verification step.
+
+---
+
+## 11. Terrain renderer ✅ DONE
+
+Render:
+
+* Generated mesh
+* Materials
+* Debug overlays
+
+Acceptance:
+
+* Planet visible
+
+Notes: Three small pieces close the pipeline started in Tasks 9/10.
+`TerrainFieldSampler` (`Runtime/Terrain/`) is a pure function sampling a
+`TerrainField` onto a square bounding-box grid — whole-planet sampling was
+chosen over per-chunk sectioning as the simplest approach that satisfies
+"planet visible"; per-chunk partial sampling/rebuilds belong to Task 15
+(Chunk rebuilding) and can reuse this sampler's grid math per-sector later.
+`MeshDataConverter.ToUnityMesh(meshData, reuse)` (`Runtime/Meshing/`)
+converts the algorithm-side `MeshData` into a real `UnityEngine.Mesh`,
+accepting an existing Mesh to overwrite so rebuilds don't allocate a new
+asset every time (supports the "dirty chunk rebuild, not full regen"
+performance rule once chunk-local rebuilds land). `TerrainRenderer`
+(`Runtime/Terrain/`) is the MonoBehaviour tying it together: `Rebuild(field,
+boundsRadius, chunkGrid)` samples → meshes → converts → assigns
+`MeshFilter.sharedMesh`, `MeshRenderer.sharedMaterial`, and calls
+`TerrainColliderBuilder.Apply` for the `PolygonCollider2D` — all three
+components required via `[RequireComponent]`. Debug overlays are gizmo-based
+per CLAUDE.md's "every major system should expose debugging tools": optional
+chunk-border rays (`drawDebugChunkBorders`, needs a `ChunkGrid` passed to
+`Rebuild`) and surface normal rays (`drawDebugNormals`, reads back
+`_mesh.normals`) drawn in `OnDrawGizmos`, both off by default to avoid
+scene-view clutter. Tests cover `TerrainFieldSampler` argument validation,
+grid dimensions/origin placement, solid-center/air-corner sampling
+correctness, and that its output is directly meshable via
+`MarchingSquaresMesher`; `TerrainRenderer` tests verify a `Rebuild` call
+produces a non-empty mesh and populated collider, and that a second
+`Rebuild` reuses the same `Mesh` instance rather than allocating a new one.
+This is the first task where a planet becomes visible in the Unity Editor —
+verified structurally only here (no Unity CLI available); opening the editor,
+adding a `TerrainRenderer` to a GameObject, and calling `Rebuild` with a
+generated `TerrainField` is the outstanding in-editor verification step.
+
+---
+
+# PHASE 3 — Terrain Editing
+
+## 12. Brush framework ✅ DONE
+
+Support:
+
+* Add
+* Remove
+* Smooth
+
+Tests:
+
+* Brush falloff
+* Radius
+* Multiple edits
+
+Notes: `BrushMode` (`Runtime/Terrain/`) enum — Add/Remove/Smooth — and
+`TerrainBrush` (immutable readonly struct: mode, radius, strength) added as
+the single entry point terrain-editing gameplay code should call.
+`TerrainBrush.Apply(field, localPosition)` translates the mode into a
+`TerrainField` mutation: Add/Remove both produce a `TerrainEdit` (reusing
+Task 5's existing smoothstep-falloff brush and additive/subtractive
+direction — no duplicate falloff logic), while Smooth is new behavior added
+directly to `TerrainField` as `SmoothEdits(position, radius, strength)`,
+which reduces the `Strength` of nearby existing edits (clamped to never go
+negative) using the same smoothstep falloff profile rather than adding a new
+deformation — smoothing conceptually erases past edits rather than
+sculpting new terrain, so it doesn't fit the `TerrainEdit` list itself.
+`TerrainEdit.Strength` needed to become a mutable field (was implicitly
+read-only via constructor-only assignment) to support in-place reduction;
+it's a struct stored by value in the edits list, so `SmoothEdits` reads,
+modifies, and writes back each entry by index. Tests cover constructor
+validation (radius/strength), null-field guard, Add/Remove pushing the
+surface the correct direction, Smooth reducing an edit's strength and
+clamping at zero, multiple edits accumulating in the list, and falloff
+reaching exactly zero at the radius boundary. Verified structurally only —
+no Unity CLI available here.
+
+---
+
+## 13. Digging ✅ DONE
+
+Implement:
+
+Terrain removal
+
+Acceptance:
+
+* Mesh updates
+* Collider updates
+
+Notes: `TerrainRenderer` (`Runtime/Terrain/`) gained `ApplyBrush(brush,
+localPosition)`, which applies a `TerrainBrush` (Task 12) to the field it
+was last built from and immediately calls `Rebuild` again — no new
+digging-specific code path was needed since `BrushMode.Remove` +
+`TerrainField.ApplyEdit` (Task 5) + full-field `Rebuild` (Task 11) already
+compose into "remove terrain, mesh/collider update," matching CLAUDE.md's
+"SDF is the source of truth, everything else derives from it" rule: digging
+never touches the mesh/collider directly, it mutates the field and triggers
+a full derive. `Rebuild` now caches the field/boundsRadius/chunkGrid it was
+called with so `ApplyBrush` can re-invoke it without the caller re-supplying
+them; calling `ApplyBrush` before any `Rebuild` throws
+`InvalidOperationException`, and `Rebuild` itself now null-checks `field`
+(was previously relying on `TerrainFieldSampler`'s own guard, which still
+fires the same exception type but a clearer message at the outer call site
+is preferable for a public API). Whole-planet rebuild-per-dig is
+intentionally the simplest thing that satisfies this task's acceptance
+criteria; chunk-local partial rebuilds are Task 15 (Chunk rebuilding) and
+should only touch the chunks overlapping the brush radius, reusing
+`ChunkGrid.MarkDirtyAt`/`DirtyChunks` from Task 6. Tests cover the
+no-prior-rebuild guard, mesh vertex/triangle count changing after a dig,
+`PolygonCollider2D`'s path changing after a dig, and the edit persisting on
+the `TerrainField` (`Edits.Count`). Verified structurally only — no Unity
+CLI available here.
+
+---
+
+## 14. Building terrain ✅ DONE
+
+Implement:
+
+Terrain addition
+
+Acceptance:
+
+* Smooth construction
+
+Notes: No new production code was required — `BrushMode.Add` (Task 12),
+`TerrainEdit`'s subtractive direction (Task 5, `isAdditive: false` lowers the
+sampled distance / adds material with the same smoothstep falloff used for
+digging), and `TerrainRenderer.ApplyBrush` (Task 13) already compose into a
+complete "add terrain, mesh/collider update" path with no separate
+build-specific code, matching CLAUDE.md's SDF-as-source-of-truth rule: a
+build is just a differently-signed edit flowing through the same derive
+pipeline as a dig. This task closes the test gap: `TerrainRendererTests` only
+exercised `BrushMode.Remove` end-to-end. Added
+`ApplyBrush_Build_UpdatesMeshVertexCount`, `ApplyBrush_Build_UpdatesCollider`,
+`ApplyBrush_Build_PersistsEditOnField`, and
+`ApplyBrush_Build_PushesSurfaceOutwardSmoothly` (asserts the sampled distance
+at the brush center moves continuously toward solid rather than jumping,
+i.e. "smooth construction") to `Tests/EditMode/TerrainRendererTests.cs`,
+mirroring the existing dig tests. `TerrainBrushTests.Apply_Add_*` already
+covered the lower-level field behavior. Verified structurally only — no
+Unity CLI available here; running the Test Runner in-editor is the
+outstanding verification step.
+
+---
+
+## 15. Chunk rebuilding ✅ DONE
+
+Rebuild only dirty chunks
+
+Tests:
+
+* Local rebuilds
+* Neighbor seams
+
+Notes: Three pieces close this task. `MarchingSquaresMesher` (Task 9)
+gained a `Generate(samples, positions, uvScale)` overload alongside the
+existing `Generate(samples, cellSize, origin, uvScale)` — both now funnel
+into a shared private `EmitCell` taking raw corner samples/positions, so the
+Marching Squares case table exists in exactly one place. The new overload
+accepts an explicit non-uniform position grid (`Vector2[,]`) instead of
+deriving positions from a uniform cell size, because chunks are angular
+wedges (radial rows, angular columns), not axis-aligned rectangles — the
+original overload and all its call sites/tests are untouched.
+`CartesianChunkFieldSampler.Sample(field, chunk, maxRadius, cellSize,
+seamCache)` (`Runtime/Terrain/`) is the chunk-local counterpart to Task 11's
+`TerrainFieldSampler`: it samples one `TerrainChunk`'s exact
+[StartAngle, EndAngle] wedge from radius 0 to maxRadius onto a Cartesian
+lattice. Each chunk's lattice is expanded by one cell of margin so that
+boundary-straddling cells are fully included. The raw terrain SDF at each
+lattice point is combined with a wedge mask via `Mathf.Max` (CSG-AND) to
+clip the mesh at the chunk boundary. `ChunkTerrainRenderer`
+(`Runtime/Terrain/`) is the chunk-owning renderer TASKS.md/SCOPE.md call for:
+one child GameObject (MeshFilter/MeshRenderer/PolygonCollider2D) per chunk,
+created once in `Initialize`, with `RebuildDirtyChunks()` iterating only
+`ChunkGrid.DirtyChunks()` (Task 6) — chunks not reported dirty keep their
+existing mesh/collider instance untouched, satisfying "never regenerate an
+entire planet; only dirty chunks rebuild." This is a new, separate component
+from Task 11's `TerrainRenderer` (whole-planet single mesh) rather than a
+replacement — both remain valid entry points. Tests
+(`CartesianChunkFieldSamplerTests`) cover dimension/argument validation, that
+a chunk's first sampled column matches its StartAngle position, and seam
+equality between adjacent chunks. `ChunkTerrainRendererTests` cover the
+no-Initialize guard, one child per chunk, dirty flags clearing after rebuild,
+local rebuilds (`RebuildDirtyChunks_OnlyRebuildsChunksMarkedDirty`), and
+mesh-instance reuse on repeated rebuilds. Verified structurally only — no
+Unity CLI available here.
+
+---
+
+## 15.1. Chunk seam gap fix (seam margin in CartesianChunkFieldSampler) ✅ DONE
+
+Follow-up to Task 15 (Chunk rebuilding), raised by visible seam gaps at chunk
+boundaries in-editor: every chunk combined its sampled terrain SDF with a
+steep wedge mask (`Mathf.Max(terrain, WedgeMask(...))`). At a shared cell edge
+crossing the boundary between adjacent chunks, one chunk had a terrain value
+at the lattice point on its side and a large positive mask value at the lattice
+point on the neighbor's side — and vice versa. Marching Squares interpolated
+the zero-crossing independently, placing contour vertices ~96% of a cell apart.
+Visible gap.
+
+Root cause: the `ChunkSeamCache` only cached boundary *direction vectors*,
+ensuring both chunks used the same ray. But `Cross(dir, point)` is inherently
+signed differently for points on opposite sides of the ray, so the mask values
+remained asymmetric. Same direction, opposite sign.
+
+Fix: lattice points within a 2-cell perpendicular margin of either boundary
+ray now bypass the wedge mask entirely and use the raw terrain SDF directly.
+Both neighboring chunks sample the same lattice points in the overlap strip
+(created by `ComputeLatticeBounds` 1-cell expansion), and feeding both the
+same terrain value guarantees identical Marching Squares topology at the seam.
+The mesh may extend up to one cell past the boundary ray, but the neighbor
+chunk renders the same triangles there — visually seamless, minor overdraw.
+
+Changes (`Runtime/Terrain/CartesianChunkFieldSampler.cs`):
+- `IsWithinSeamMargin(position, dirStart, dirEnd, cellSize)` — true when a
+  lattice point lies within 2×cellSize of either boundary ray (forward side
+  only, via `IsNearRay` helper).
+- Sampling loop: when within the seam margin, use `terrainValue` directly
+  instead of `Mathf.Max(terrainValue, WedgeMask(...))`.
+- Class doc comment updated to describe the seam margin approach (replacing
+  the now-stale `previousSeam`/`nextSeam` parameter description that
+  described an API that never existed).
+
+Tests (`Tests/EditMode/CartesianChunkFieldSamplerTests.cs`):
+- `Sample_AdjacentChunks_NearSeamPointsUseTerrainNotMask` — asserts that at a
+  shared lattice point near (but not on) the boundary ray, both chunks produce
+  the raw terrain SDF, not the steep mask value.
+- `Sample_FarFromSeam_StillClippedByWedgeMask` — sanity check that interior
+  points well inside the wedge remain correctly solid (the seam margin does
+  not affect far-from-boundary sampling).
+
+The existing `Sample_AdjacentChunks_ShareIdenticalSamplesAtSharedLatticePoints`
+test should now also pass for all shared points (it previously failed for
+near-boundary points where one chunk used terrain and the other used mask).
+Verified structurally only — no Unity CLI available here.
+
+---
+
+## 15.5. Solid brush + idempotent overlapping edits ✅ DONE
+
+Follow-up to Task 12 (Brush framework), raised via manual mouse-editing
+testing (Task 13/14's `MouseTerrainEditor` demo driver) rather than a
+pre-planned task: the original soft, additive brush "melted" terrain the
+longer a stroke held still or overlapped itself, instead of behaving like a
+solid eraser/stamp.
+
+Acceptance:
+
+* A brush stroke fully clears/fills material within its radius without a
+  soft taper across the whole radius (opt-in via a new hardness parameter).
+* Holding the brush stationary does not keep carving deeper each frame.
+* Overlapping or repeated strokes at the same position do not accumulate
+  depth beyond a single edit's effect — re-editing an already-fully-edited
+  spot is a no-op, not a "melt."
+* A genuinely stronger/larger edit at the same position still takes effect
+  (idempotence blocks re-doing the same edit, not doing a bigger one).
+
+Notes: Three coordinated changes, spanning both the terrain-editing core and
+the demo input driver. `TerrainEdit` (Task 5) gained a `Hardness` field
+(0 = original full-radius smoothstep taper, 1 = solid: full strength up to
+the radius, no taper), threaded through a new `TerrainBrush` (Task 12)
+constructor parameter (default `0f`, preserving old behavior for existing
+call sites). The deeper fix is in `TerrainField.Sample` (Task 5): edits were
+being combined via `distance += contribution` for every overlapping edit,
+which is what caused melting — any two strokes whose radii overlapped, not
+just exact repeats, kept carving deeper. `Sample` now combines edits
+CSG-style instead: `Mathf.Max(distance, contribution)` for dig edits,
+`Mathf.Min(distance, contribution)` for build edits, with an explicit skip
+for edits whose radius doesn't reach the sampled point (`SampleContribution`
+returns `0` there, which is not a safe max/min identity value — `max(solid,
+0)` would incorrectly pull unrelated solid terrain toward the surface).
+This makes repeated/overlapping edits idempotent: re-digging an
+already-cleared spot has no further effect, while a larger/stronger edit at
+the same spot still carves further, since its contribution is genuinely
+larger. `MouseTerrainEditor` (demo/debug driver, not itself a numbered task)
+also gained a `minDragDistance` gate so holding the mouse still doesn't
+re-apply a full-strength edit every frame — defense in depth alongside the
+`Sample` fix, since even an idempotent solid edit shouldn't need reapplying
+every frame at an unmoved position. Tests: `TerrainFieldTests` replaced its
+old `MultipleOverlappingEdits_AccumulateAdditively` test (which asserted the
+exact melting behavior being fixed) with
+`DistinctNonOverlappingDigEdits_BothApply`,
+`OverlappingDigEdits_AtSamePosition_AreIdempotentNotAdditive`,
+`OverlappingBuildEdits_AtSamePosition_AreIdempotentNotAdditive`, and
+`LargerDigEdit_AtSamePosition_CarvesDeeper`. `TerrainBrushTests` added
+`Apply_SolidHardness_IsFullStrengthNearRadiusEdge`,
+`Apply_SolidHardness_StillReachesZeroAtRadiusBoundary`, and
+`Apply_StationaryRepeatedEdits_DoNotGrowBeyondSingleEditFootprint`.
+Verified structurally only — no Unity CLI available here; confirming the
+"solid eraser" feel and mesh/collider correctness for overlapping strokes
+in-editor is the outstanding verification step.
+
+---
+
+## 15.6. Exact circular brush shape (linear SDF, remove Hardness) ✅ DONE
+
+Follow-up to Task 15.5: fixing the melting-ice bug exposed a second problem —
+single brush strokes rendered as blocky, marching-squares-faceted shapes
+instead of clean circles.
+
+Acceptance:
+
+* A single dig/build stroke produces a geometrically circular edge, not a
+  faceted/blocky one, regardless of chunk grid resolution.
+* No separate "hardness" parameter is needed — every edit is exactly
+  circular by construction.
+
+Notes: Root cause was that `TerrainEdit.SampleContribution` (Task 5, revised
+Task 15.5) returned a smoothstep-*curved* falloff as a function of distance
+from the brush center, not a linear signed distance. `MarchingSquaresMesher`
+(Task 9) only linearly interpolates the zero-crossing between adjacent grid
+samples — it reconstructs an exact circle only when the underlying field is
+itself linear in distance near the crossing, exactly as the base planet
+sphere (`|localPos| - radius`) already is. A curved falloff means the
+interpolated crossing deviates from the true circle, visible as facets at
+chunk resolution. Fix: `SampleContribution` now returns an exact linear
+signed-distance cone to the brush boundary — `Radius - distanceFromBrush`,
+capped by `Strength` — matching the base sphere's own signed-distance shape
+instead of an arbitrary strength curve. This makes the `Hardness` parameter
+added in Task 15.5 obsolete (every edit is now always exactly circular), so
+it was removed entirely from `TerrainEdit`, `TerrainBrush`, and
+`MouseTerrainEditor` (including its now-stale doc comments); `Strength` is
+repurposed as a cap on carve/build depth rather than a falloff shape
+control. `TerrainField.Sample`'s CSG max/min combine (Task 15.5) is
+unchanged — it composes with the new linear contribution the same way it did
+with the old curved one. This also sets up the user's stated next goal (a
+brush that follows a circular "shell" for local flatness), since edits are
+now true signed distances rather than an ad hoc strength curve. Tests:
+replaced the two Hardness-specific `TerrainBrushTests` cases with
+`Apply_ContributionIsLinearInDistance_NotCurved` (asserts equal deltas at
+equally-spaced distances from the brush center, proving no curvature) and
+`Apply_ContributionAtCenter_IsCappedByStrength`; updated
+`Apply_StationaryRepeatedEdits_DoNotGrowBeyondSingleEditFootprint`'s
+assertion and comment to no longer reference Hardness. Verified structurally
+only — no Unity CLI available here; the user's own in-editor test (paint a
+circle, zoom in, confirm a smooth circular edge instead of facets) is the
+outstanding acceptance check.
+
+---
+
+## 15.7. Asymptotic decider for ambiguous Marching Squares saddle cases ✅ DONE
+
+Follow-up to Task 15.6: making the brush SDF exactly linear fixed general
+faceting, but a distinct artifact remained — as a brush edge moved smoothly,
+its contour would occasionally show a sudden spike or notch instead of
+changing continuously.
+
+Acceptance:
+
+* Moving a brush's edge continuously through a cell never produces a
+  discontinuous topology change (spike/notch) at ambiguous saddle
+  configurations.
+
+Notes: `MarchingSquaresMesher.EmitCell`'s ambiguous saddle cases (5 and 10:
+diagonally-opposite corners solid, the other two not) previously always
+resolved to the same triangulation — two disjoint triangles — regardless of
+the actual field shape near the cell center (documented at the time as an
+accepted simplification, Task 9). Whether the two solid corners should
+connect through the cell center or stay disjoint genuinely depends on the
+field there; always picking "disjoint" means that whenever the true field
+would connect them, the mesh flips discontinuously between the two
+topologies as sample values cross the saddle threshold during a moving
+edit — exactly the "smooth, then a spike suddenly appears" artifact
+reported. Fixed with the standard asymptotic decider: a bilinear estimate of
+the field value at the cell center (`EstimateCenter`, the average of the
+four corner samples) picks between the disjoint triangulation (center
+estimate ≥ 0, air) and a new merged hexagon connecting the two solid
+corners through all four edge-interpolated points (center estimate < 0,
+solid) — added `AddHexagon`, following the existing `AddTriangle`/`AddQuad`/
+`AddPentagon` fan-triangulation pattern. This makes the topology choice a
+continuous function of the sampled field instead of a fixed guess, matching
+the true underlying shape and eliminating the discontinuity. The original
+Task 9 test (`Generate_AmbiguousSaddleCase_ProducesTwoTriangles`, symmetric
+±1 corners → center estimate exactly zero → still resolves to the disjoint
+case) was renamed to
+`Generate_AmbiguousSaddleCase_WithAirCenterEstimate_ProducesTwoDisjointTriangles`
+to reflect that its behavior is now conditional, not unconditional; added
+`Generate_AmbiguousSaddleCase_WithSolidCenterEstimate_ProducesMergedHexagon`
+(strongly-negative solid corners, weakly-positive other corners → center
+estimate negative → asserts the 4-triangle hexagon is produced instead).
+Verified structurally only — no Unity CLI available here; the user's
+in-editor test (slowly dragging a brush and watching for a discontinuous
+spike/notch at any point) is the outstanding acceptance check.
+
+---
+
+## 15.8. Remove Strength plateau clamp in brush contribution ✅ DONE
+
+Follow-up to Task 15.6: the linear cone fix made the *shape* of the SDF exactly
+circular, but `SampleContribution` still clamped that cone to `Mathf.Min(Radius -
+distanceFromBrush, Strength)` — a flat plateau everywhere the cone exceeded
+`Strength`. A flat plateau has zero gradient, so Marching Squares (which only
+linearly interpolates the zero-crossing between adjacent grid samples) had no
+gradient to interpolate through across most of the disc, producing grid-aligned
+stair-stepping — worst at `Strength = 0` (entire disc is a step function, visible
+at both the surface and the brush center), and still present at high `Strength`
+(plateau shrinks but never vanishes while `Strength < Radius`).
+
+Acceptance:
+
+* A brush stroke is smoothly circular at any `Strength` value, including nonzero
+  moderate values previously showing stair-stepping.
+
+Notes: `TerrainEdit.SampleContribution` (Task 5, revised Tasks 12/15.5/15.6) no
+longer clamps the cone to `Strength`; it now scales the uncapped cone by `Strength`
+instead: `(Radius - distanceFromBrush) * Mathf.Max(Strength, 0f)`. This keeps
+gradient nonzero everywhere inside the brush radius (a true signed-distance-shaped
+field, matching the base planet sphere's own shape), so Marching Squares
+reconstructs a smooth circle regardless of chunk resolution or Strength value.
+`Strength` changes meaning slightly: previously a hard cap on carve/build depth, it
+is now a depth/intensity multiplier on the cone (`Strength = 1` reaches exactly
+`Radius` of depth at the brush center; existing call sites already passing values
+like `2f`/`5f`/`100f` expecting "stronger reaches deeper" are unaffected in
+direction, only in exact magnitude). `TerrainField.Sample`'s CSG max/min combine
+(Task 15.5) is unchanged — it composes with any signed-distance-shaped contribution
+the same way regardless of whether it was capped. `TerrainBrushTests
+.Apply_ContributionAtCenter_IsCappedByStrength` (asserted the old plateau value)
+replaced with `Apply_ContributionAtCenter_IsRadiusTimesStrength` asserting the new
+scaled-cone value at the brush center. Verified structurally only — no Unity CLI
+available here; the user's in-editor test (paint a stroke at low and moderate
+Strength, zoom in, confirm a smooth circle instead of stair-stepping at either) is
+the outstanding acceptance check.
+
+---
+
+## 15.9. Remove Strength; brush edits are a pure SDF ✅ DONE
+
+Follow-up to Task 15.8: `Strength` still existed as a depth/intensity multiplier
+on the brush cone. Requested explicitly: remove it entirely so a brush edit is
+nothing but a genuine signed-distance cone to a circle of `Radius` — no separate
+tuning parameter distorting that shape.
+
+Acceptance:
+
+* `TerrainBrush`/`TerrainEdit` take only a radius; no `Strength` parameter exists.
+* `SampleContribution` is exactly `Radius - distanceFromBrush` (capped at zero
+  outside the radius via the existing early-out), matching the base planet
+  sphere's own signed-distance shape.
+
+Notes: `TerrainEdit` (`Runtime/Terrain/TerrainEdit.cs`) dropped the `Strength`
+field entirely; `SampleContribution` is now the unscaled cone. `TerrainBrush`
+(`Runtime/Terrain/TerrainBrush.cs`) dropped `Strength` and its validation —
+`Radius` is its only parameter, for every mode. `MouseTerrainEditor` dropped the
+now-unused `brushStrength` field. The one behavior that needed redesigning:
+`TerrainField.SmoothEdits` (Task 12) previously shrank `edit.Strength`; with no
+`Strength` left on `TerrainEdit`, it now shrinks `edit.Radius` instead (same
+smoothstep-falloff profile, floored at zero) — `TerrainEdit.Radius` became a
+mutable field to support this, the same situation `Strength` was in before Task
+12 made it mutable. `SmoothEdits`'s separate `strength` parameter was dropped too
+(redundant with a single-parameter brush): its signature is now
+`SmoothEdits(Vector2 localPosition, float radius)`, reusing `radius` as both the
+affected area and the reduction amount. An edit shrunk to `Radius <= 0`
+contributes nothing (the existing `distanceFromBrush >= Radius` early-out is
+always true once `Radius <= 0`) so it's left in the list rather than pruned,
+consistent with how zero-`Strength` edits were handled before. Tests: removed
+`Constructor_NegativeStrength_Throws` (no strength param to validate); rewrote
+`Apply_Smooth_ReducesNearbyEditStrength`/`Apply_Smooth_NeverReducesStrengthBelowZero`
+to assert against `edit.Radius`; renamed
+`Apply_ContributionAtCenter_IsCappedByStrength` to
+`Apply_ContributionAtCenter_EqualsRadius` (now asserts contribution at brush
+center equals `Radius` exactly); `TerrainFieldTests.LargerDigEdit_AtSamePosition_CarvesDeeper`
+now varies `radius` (3f vs 8f) instead of `strength` to prove a genuinely larger
+edit still carves further; every remaining `TerrainEdit`/`TerrainBrush`
+construction across `TerrainBrushTests`, `TerrainFieldTests`,
+`TerrainRendererTests`, and `ChunkTerrainRendererTests` dropped the trailing
+strength argument. `TerrainField.Sample`'s CSG max/min combine (Task 15.5) is
+unchanged — it composes with any signed-distance-shaped contribution the same way
+regardless of what feeds it. Verified structurally only — no Unity CLI available
+here; running the Test Runner in-editor, and painting dig/build/smooth strokes to
+confirm they remain smoothly circular with no separate strength knob, are the
+outstanding acceptance checks.
+
+---
+
+## 16. Undo system
+
+Store:
+
+Terrain edits
+
+Acceptance:
+
+* Undo
+* Redo
+
+---
+
+# PHASE 4 — Materials
+
+## 17. Material database
+
+Implement:
+
+* Material definitions
+* IDs
+* Properties
+
+---
+
+## 18. Material sampling
+
+Assign:
+
+* Dirt
+* Stone
+* Ice
+
+Tests:
+
+* Correct lookup
+
+---
+
+## 19. Geological layers
+
+Generate:
+
+* Soil
+* Stone
+* Mantle
+
+Tests:
+
+* Layer depth
+* Continuity
+
+---
+
+## 20. Ore generation
+
+Generate:
+
+* Iron
+* Copper
+* Gold
+
+Tests:
+
+* Deterministic
+* Distribution
+
+---
+
+# PHASE 5 — Gravity
+
+## 21. Gravity system
+
+Implement:
+
+Radial gravity
+
+Tests:
+
+* Correct direction
+* Magnitude
+
+---
+
+## 22. Player orientation
+
+Rotate player
+
+Acceptance:
+
+* Feet point toward planet
+
+---
+
+## 23. Multi-planet gravity
+
+Implement:
+
+Nearest influence
+
+Tests:
+
+* Planet switching
+
+---
+
+# PHASE 6 — World Generation
+
+## 24. Cave generation
+
+Implement
+
+Noise caves
+
+Tests:
+
+* Connectivity
+* Density
+
+---
+
+## 25. Biome framework
+
+Support:
+
+* Temperature
+* Moisture
+* Surface materials
+
+---
+
+## 26. Planet DNA
+
+Generate:
+
+Random planet parameters
+
+Tests:
+
+* Repeatability
+
+---
+
+# PHASE 7 — Gameplay
+
+## 27. Player controller
+
+Movement
+
+Jump
+
+Mining
+
+Building
+
+---
+
+## 28. Inventory
+
+Implement
+
+Items
+
+Resources
+
+Storage
+
+---
+
+## 29. Resource drops
+
+Spawn mined resources
+
+Tests:
+
+* Material correctness
+
+---
+
+## 30. Building placement
+
+Support:
+
+Foundations
+
+Validation
+
+---
+
+# PHASE 8 — Physics
+
+## 31. Planet collision detection
+
+Detect:
+
+Planet overlap
+
+---
+
+## 32. Terrain deformation
+
+Temporary deformation
+
+Acceptance:
+
+Visible squish
+
+---
+
+## 33. Permanent deformation
+
+Bake impacts
+
+Acceptance:
+
+Persistent craters
+
+---
+
+# PHASE 9 — Atmosphere
+
+## 34. Atmospheric grid
+
+Create
+
+Pressure field
+
+Temperature field
+
+---
+
+## 35. Fluid solver
+
+Implement
+
+Euler simulation
+
+Tests:
+
+* Stable timestep
+
+---
+
+## 36. Terrain interaction
+
+Wind around mountains
+
+Tests:
+
+* Obstacle flow
+
+---
+
+## 37. Weather
+
+Generate
+
+Clouds
+
+Rain
+
+Storms
+
+---
+
+# PHASE 10 — Water
+
+## 38. Water simulation
+
+Implement
+
+Surface water
+
+---
+
+## 39. Water terrain interaction
+
+Flood caves
+
+Fill craters
+
+---
+
+# PHASE 11 — Rendering
+
+## 40. Material blending
+
+Blend
+
+Surface textures
+
+---
+
+## 41. Lighting
+
+Dynamic lighting
+
+Normals
+
+---
+
+## 42. Shadows
+
+Terrain shadows
+
+---
+
+# PHASE 12 — Optimization
+
+## 43. Burst compatibility
+
+Refactor
+
+Burst-safe code
+
+---
+
+## 44. Job System
+
+Move:
+
+Generation
+
+Meshing
+
+Sampling
+
+---
+
+## 45. Memory optimization
+
+Reduce allocations
+
+Pool objects
+
+---
+
+## 46. LOD
+
+Planet detail levels
+
+---
+
+## 47. Chunk streaming
+
+Load/unload chunks
+
+---
+
+# PHASE 13 — Saving
+
+## 48. Save format
+
+Store:
+
+Planet seed
+
+Terrain edits
+
+Entities
+
+---
+
+## 49. Terrain edit replay
+
+Regenerate
+
+Apply edits
+
+---
+
+# PHASE 14 — Debugging
+
+## 50. Terrain debugger
+
+Display
+
+SDF
+
+Chunks
+
+Normals
+
+---
+
+## 51. Planet debugger
+
+Display
+
+Gravity
+
+Radius
+
+Influence
+
+---
+
+## 52. Generator debugger
+
+Display
+
+Noise
+
+Layers
+
+Ore
+
+Caves
+
+---
+
+# PHASE 15 — Polish
+
+## 53. Profiling
+
+Profile every major system
+
+Record:
+
+CPU
+
+Memory
+
+GC
+
+---
+
+## 54. Stress testing
+
+Test:
+
+100 planets
+
+Continuous digging
+
+Continuous building
+
+Planet collisions
+
+---
+
+## 55. Determinism testing
+
+Verify:
+
+Same seed
+
+Same output
+
+Across multiple runs
+
+---
+
+## 56. Documentation
+
+Document:
+
+Architecture
+
+Algorithms
+
+Data flow
+
+Extension points
+
+---
+
+# Continuous Agent Behavior
+
+Every implementation agent should:
+
+1. Read the architecture documentation before coding.
+2. Search for existing implementations before creating new ones.
+3. Reuse abstractions instead of duplicating code.
+4. Leave the project compiling after every task.
+5. Add or update tests alongside implementation.
+6. Add debug visualization for every simulation feature.
+7. Profile new systems if they run every frame.
+8. Keep classes focused on a single responsibility.
+9. Favor composition over inheritance.
+10. Make all procedural generation deterministic from the planet seed.
+11. Avoid introducing global state.
+12. Never optimize blindly—measure first.
+13. Document assumptions and invariants in code.
+14. Ensure systems can eventually migrate to Unity Jobs and Burst without major rewrites.
+15. Prefer data-oriented APIs and immutable configuration objects where practical.
+
+The goal is steady, incremental progress toward a deterministic, simulation-driven planetary engine where every completed task leaves the project in a healthier, testable, and extensible state.
