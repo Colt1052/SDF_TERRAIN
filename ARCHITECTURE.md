@@ -89,14 +89,20 @@ Planet DNA (seed)
 ### 3.2 Terrain Edit Flow (Phase 3+)
 
 ```
-Brush input → TerrainField.Modify (writes SDF)
+Brush input → TerrainField.ApplyEdit (persists TerrainEdit)
+            → edit indexed into chunks whose bbox overlaps brush (EnableChunkIndexing)
             → mark affected chunks dirty
+            → dirty chunks sample field via chunk-indexed Sample(position, chunkIndex)
+              (only scans edits registered to that chunk — O(local edits), not O(total))
             → dirty chunks re-mesh (Marching Squares)
             → dirty chunks regenerate collider
             → renderer picks up updated mesh
 ```
 
 No step here ever touches a mesh or collider directly; edits only ever target the SDF.
+
+`PruneDeadEdits()` compacts zero-radius edits and remaps chunk indices atomically,
+called periodically to prevent unbounded list growth.
 
 ### 3.3 Chunk Seam Strategy
 
@@ -134,6 +140,7 @@ produces no contour in all-air regions.
 | Collision | `PolygonCollider2D` derived from mesh/chunk data | 2D project; matches TASKS.md #10 |
 | Assembly structure | Dedicated `.asmdef` for Runtime code, separate for Tests | CLAUDE.md Task 1.1 ("Create assembly definitions"); keeps compile times low and enforces the layering above |
 | Seam handling | No seam logic needed: shared lattice points | Adjacent square chunks sample the same global Cartesian lattice. Shared boundary lattice points produce identical terrain values by construction (same field, same position), so Marching Squares generates contiguous mesh edges automatically. |
+| Edit sampling | Chunk-indexed spatial index | `EnableChunkIndexing()` maps each edit to chunks whose bounding box overlaps the brush footprint. `CartesianChunkFieldSampler` calls `Sample(position, chunkIndex)` to scan only local edits — O(chunk_local_edits) instead of O(total_lifetime_edits). `PruneDeadEdits()` reclaims zero-radius entries. CSG Max/Min commutativity guarantees excluding distant edits produces identical results. |
 
 ---
 

@@ -75,13 +75,16 @@ namespace SDFTerrain.Terrain
                     float y = (iyMin + j) * cellSize;
                     var position = new Vector2(x, y);
 
-                    // Chunk-agnostic Sample(), not the chunk-indexed overload: adjacent chunks
-                    // share boundary lattice points that sample the same field at the same
-                    // position. Using the global sample ensures bit-identical values regardless
-                    // of which chunk samples them. The chunk-indexed overload decides edit
-                    // membership per chunk via a coarse rectangular test, which could treat a
-                    // shared boundary point differently from each chunk.
-                    float terrainValue = field.Sample(position);
+                    // Chunk-indexed Sample(): only scans edits whose footprint overlaps this
+                    // chunk. Because CSG Max/Min is commutative and idempotent, an edit whose
+                    // rectangular footprint cannot reach a chunk's bounding box can never be
+                    // the Max/Min-selected contributor there — so excluding it produces identical
+                    // results while bounding sampling cost to O(chunk_local_edits) instead of
+                    // O(total_lifetime_edits). Adjacent chunks still share boundary lattice
+                    // points that sample the same field at the same position, and the indexer
+                    // conservatively registers edits against all overlapping chunks, so seams
+                    // remain bit-identical.
+                    float terrainValue = field.Sample(position, chunk.Index);
 
                     positions[i, j] = position;
                     samples[i, j] = terrainValue;

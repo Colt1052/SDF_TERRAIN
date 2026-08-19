@@ -282,5 +282,137 @@ namespace SDFTerrain.Tests
             Assert.Greater(field.Sample(brushCenter, targetChunk.Index), before);
             Assert.AreEqual(field.Sample(brushCenter), field.Sample(brushCenter, targetChunk.Index), 1e-5f);
         }
+
+        [Test]
+        public void PruneDeadEdits_RemovesZeroRadiusEdits()
+        {
+            var field = new TerrainField(10f);
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 5f), radius: 0f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(-10f, 0f), radius: 2f, isAdditive: false));
+            field.ApplyEdit(new TerrainEdit(new Vector2(0f, -10f), radius: 0f, isAdditive: false));
+
+            Assert.AreEqual(4, field.Edits.Count);
+
+            int pruned = field.PruneDeadEdits();
+
+            Assert.AreEqual(2, pruned);
+            Assert.AreEqual(2, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneDeadEdits_PreservesSamplingCorrectness()
+        {
+            var field = new TerrainField(10f);
+            Vector2 digPos = new Vector2(10f, 0f);
+
+            field.ApplyEdit(new TerrainEdit(digPos, radius: 3f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 5f), radius: 0f, isAdditive: true));
+
+            float beforePrune = field.Sample(digPos);
+
+            field.PruneDeadEdits();
+
+            Assert.AreEqual(beforePrune, field.Sample(digPos), 1e-5f);
+        }
+
+        [Test]
+        public void PruneDeadEdits_SafeWhenNoDeadEdits()
+        {
+            var field = new TerrainField(10f);
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(-10f, 0f), radius: 2f, isAdditive: false));
+
+            int pruned = field.PruneDeadEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(2, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneDeadEdits_RemapsChunkIndicesCorrectly()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Add three edits: live, dead, live
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(0f, 0f), radius: 0f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(-10f, 0f), radius: 2f, isAdditive: false));
+
+            field.PruneDeadEdits();
+
+            // Verify chunk-indexed sampling still matches full-scan sampling
+            for (int i = 0; i < grid.ChunkCount; i++)
+            {
+                TerrainChunk chunk = grid.GetChunk(i);
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
+
+                float expected = field.Sample(sample);
+                float actual = field.Sample(sample, chunk.Index);
+                Assert.AreEqual(expected, actual, 1e-5f, $"Mismatch at chunk {chunk.Index} after pruning");
+            }
+        }
+
+        [Test]
+        public void PruneDeadEdits_IdempotentOnEmptyField()
+        {
+            var field = new TerrainField(10f);
+
+            int pruned = field.PruneDeadEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(0, field.Edits.Count);
+        }
+
+        [Test]
+        public void ClearEdits_AlsoClearsChunkIndexing()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
+
+            field.ClearEdits();
+
+            Assert.AreEqual(0, field.Edits.Count);
+            // Verify chunk-indexed sampling still works (no stale indices)
+            for (int i = 0; i < grid.ChunkCount; i++)
+            {
+                TerrainChunk chunk = grid.GetChunk(i);
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
+
+                float expected = field.Sample(sample);
+                float actual = field.Sample(sample, chunk.Index);
+                Assert.AreEqual(expected, actual, 1e-5f, $"Mismatch at chunk {chunk.Index} after clear");
+            }
+        }
+
+        [Test]
+        public void LoadEdits_RebuildsChunkIndexing()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Add an edit, then load a different set
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
+
+            var replacement = new List<TerrainEdit>
+            {
+                new TerrainEdit(new Vector2(-10f, 0f), radius: 2f, isAdditive: false),
+            };
+            field.LoadEdits(replacement);
+
+            Assert.AreEqual(1, field.Edits.Count);
+            // Verify chunk-indexed sampling matches full-scan for the new edit
+            Vector2 samplePos = new Vector2(-10f, 0f);
+            float expected = field.Sample(samplePos);
+            TerrainChunk chunk = grid.GetChunkAt(samplePos);
+            float actual = field.Sample(samplePos, chunk.Index);
+            Assert.AreEqual(expected, actual, 1e-5f);
+        }
     }
 }

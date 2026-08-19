@@ -976,6 +976,49 @@ works correctly at chunk edges everywhere.
 
 ---
 
+## 15.11. Chunk-indexed sampling + dead edit pruning ✅ DONE
+
+Performance fix: edits degraded over time because `CartesianChunkFieldSampler`
+called `field.Sample(position)` — the chunk-agnostic overload that iterates
+every edit ever applied — making sampling cost O(total_lifetime_edits). After
+thousands of brush strokes, each lattice point scanned thousands of edits,
+causing visible lag that worsened with use.
+
+Acceptance:
+
+* Sampling cost depends only on edits overlapping the chunk, not total edits.
+* Zero-radius edits are reclaimable without corrupting chunk indices.
+* `ClearEdits` and `LoadEdits` keep chunk indices consistent.
+
+Notes: Three coordinated changes. `CartesianChunkFieldSampler.Sample()` now
+calls `field.Sample(position, chunk.Index)` — the chunk-indexed overload that
+only scans edits registered to the chunk via the spatial index maintained by
+`EnableChunkIndexing`. Because CSG Max/Min is commutative and idempotent, an
+edit whose rectangular footprint cannot reach a chunk can never be the
+Max/Min-selected contributor there, so excluding it produces identical results
+while bounding cost to O(chunk_local_edits). `MarchingSquaresGridDebugView`
+gained `EnableChunkIndexing` in its `Initialize` to match.
+
+`TerrainField.PruneDeadEdits()` compacts `_edits` by removing zero-radius
+entries (created by smoothing) and atomically remaps all `_editsByChunk`
+indices so the chunk-indexed sampler remains valid. Returns the pruned count.
+Callers should invoke periodically to prevent silent list growth.
+
+`TerrainField.ClearEdits()` now also clears `_editsByChunk` (was leaving stale
+indices). `TerrainField.LoadEdits()` now rebuilds `_editsByChunk` for the
+replacement edits (was leaving old indices). Both were correctness bugs
+exposed by the sampler switch — chunk-indexed sampling would have seen
+stale entries if these weren't fixed.
+
+Tests: `CartesianChunkFieldSamplerTests` updated with `EnableChunkIndexing`
+on all sampling tests. `TerrainFieldTests` gained seven tests covering prune
+correctness, index remapping after prune, safe no-op prune, clear/index
+consistency, and load/index rebuild. Verified structurally only — no Unity
+CLI available here; confirming editing remains smooth after many strokes
+in-editor is the outstanding acceptance check.
+
+---
+
 ## 16. Undo system
 
 Store:

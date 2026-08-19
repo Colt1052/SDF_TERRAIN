@@ -173,10 +173,84 @@ namespace SDFTerrain.Terrain
             }
         }
 
+        /// <summary>
+        /// Removes edits that can no longer contribute (radius collapsed to zero by smoothing,
+        /// or otherwise reduced to a no-op). Compacts the edit list and remaps all chunk indices
+        /// atomically so the chunk-indexed sampler remains valid. Call periodically (e.g. after
+        /// a batch of smooth operations, or when the edit count exceeds a threshold) to prevent
+        /// unbounded list growth.
+        /// </summary>
+        /// <returns>The number of edits removed.</returns>
+        public int PruneDeadEdits()
+        {
+            int writeIndex = 0;
+            int pruned = 0;
+
+            // First pass: compact _edits, tracking which old indices survived and where they moved.
+            int count = _edits.Count;
+            int[] oldToNew = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                if (_edits[i].Radius <= 0f)
+                {
+                    oldToNew[i] = -1; // marked for removal
+                    pruned++;
+                }
+                else
+                {
+                    oldToNew[i] = writeIndex;
+                    if (writeIndex != i)
+                    {
+                        _edits[writeIndex] = _edits[i];
+                    }
+                    writeIndex++;
+                }
+            }
+
+            while (_edits.Count > writeIndex)
+            {
+                _edits.RemoveAt(_edits.Count - 1);
+            }
+
+            // Second pass: remap chunk indices and remove references to pruned edits.
+            if (_editsByChunk != null && pruned > 0)
+            {
+                for (int c = 0; c < _editsByChunk.Length; c++)
+                {
+                    List<int> chunkList = _editsByChunk[c];
+                    int w = 0;
+                    for (int r = 0; r < chunkList.Count; r++)
+                    {
+                        int oldIndex = chunkList[r];
+                        int newIndex = oldToNew[oldIndex];
+                        if (newIndex >= 0)
+                        {
+                            chunkList[w] = newIndex;
+                            w++;
+                        }
+                    }
+                    while (chunkList.Count > w)
+                    {
+                        chunkList.RemoveAt(chunkList.Count - 1);
+                    }
+                }
+            }
+
+            return pruned;
+        }
+
         /// <summary>Removes all persisted edits, leaving only the base sphere.</summary>
         public void ClearEdits()
         {
             _edits.Clear();
+
+            if (_editsByChunk != null)
+            {
+                for (int i = 0; i < _editsByChunk.Length; i++)
+                {
+                    _editsByChunk[i].Clear();
+                }
+            }
         }
 
         /// <summary>Replaces all persisted edits, e.g. when loading a save file.</summary>
@@ -189,6 +263,20 @@ namespace SDFTerrain.Terrain
 
             _edits.Clear();
             _edits.AddRange(edits);
+
+            // Rebuild chunk indexing for the new edits, if indexing is active.
+            if (_editsByChunk != null)
+            {
+                for (int i = 0; i < _editsByChunk.Length; i++)
+                {
+                    _editsByChunk[i].Clear();
+                }
+
+                for (int i = 0; i < _edits.Count; i++)
+                {
+                    IndexEdit(i, _edits[i]);
+                }
+            }
         }
     }
 }

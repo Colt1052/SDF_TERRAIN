@@ -60,6 +60,7 @@ namespace SDFTerrain.Terrain
             _field = field;
             _chunkGrid = chunkGrid;
             _cellSize = cellSize;
+            _field.EnableChunkIndexing(_chunkGrid);
             _initialized = true;
 
             _gridLines = _gridLines ?? CreateChildView("GridLines");

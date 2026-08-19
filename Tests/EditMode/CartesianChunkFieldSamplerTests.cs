@@ -34,6 +34,7 @@ namespace SDFTerrain.Tests
         {
             var field = new TerrainField(10f);
             var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
 
             CartesianChunkFieldSampler.Result result = CartesianChunkFieldSampler.Sample(field, grid.GetChunk(0), cellSize: 1f);
 
@@ -48,6 +49,7 @@ namespace SDFTerrain.Tests
         {
             var field = new TerrainField(10f);
             var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
             const float cellSize = 0.5f;
 
             CartesianChunkFieldSampler.Result result = CartesianChunkFieldSampler.Sample(field, grid.GetChunk(0), cellSize);
@@ -74,6 +76,7 @@ namespace SDFTerrain.Tests
         {
             var field = new TerrainField(10f);
             var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
             const float cellSize = 1f;
 
             // Find the chunk that contains the origin
@@ -105,6 +108,7 @@ namespace SDFTerrain.Tests
         {
             var field = new TerrainField(10f);
             var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
             const float cellSize = 0.5f;
 
             // Get two horizontally adjacent chunks
@@ -152,6 +156,7 @@ namespace SDFTerrain.Tests
             var field = new TerrainField(10f);
             // Grid: radius 10, chunkSize 15 -> cols=2, rows=2, grid spans -30..+30
             var grid = new ChunkGrid(10f, chunkSize: 15f);
+            field.EnableChunkIndexing(grid);
             const float cellSize = 5f;
 
             // Top-left chunk covers -30..-15 in X and -30..-15 in Y.
@@ -179,6 +184,7 @@ namespace SDFTerrain.Tests
         {
             var field = new TerrainField(10f);
             var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
             const float cellSize = 1f;
 
             TerrainChunk chunk = grid.GetChunk(0);
