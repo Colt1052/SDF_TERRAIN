@@ -22,7 +22,7 @@ namespace SDFTerrain.Terrain
         private readonly List<TerrainEdit> _edits = new List<TerrainEdit>();
 
         private ChunkGrid _chunkGrid;
-        private List<int>[] _editsByChunk;
+        private Dictionary<int, List<int>> _editsByChunk;
         private readonly List<int> _chunkMembershipBuffer = new List<int>();
 
         public TerrainField(float baseRadius)
@@ -63,10 +63,12 @@ namespace SDFTerrain.Terrain
             }
 
             _chunkGrid = chunkGrid;
-            _editsByChunk = new List<int>[chunkGrid.ChunkCount];
-            for (int i = 0; i < _editsByChunk.Length; i++)
+            _editsByChunk = new Dictionary<int, List<int>>();
+
+            // Initialize entries for all existing chunks.
+            foreach (TerrainChunk chunk in chunkGrid.AllChunks)
             {
-                _editsByChunk[i] = new List<int>();
+                _editsByChunk[chunk.Index] = new List<int>();
             }
 
             for (int i = 0; i < _edits.Count; i++)
@@ -132,7 +134,12 @@ namespace SDFTerrain.Terrain
             float angle = Core.RadialMath.AngleOf(localPosition);
             float distance = localPosition.magnitude - SurfaceRadiusAt(angle);
 
-            List<int> editIndices = _editsByChunk[chunkIndex];
+            if (!_editsByChunk.TryGetValue(chunkIndex, out List<int> editIndices))
+            {
+                // Chunk has no indexed edits — return base field value.
+                return distance;
+            }
+
             for (int i = 0; i < editIndices.Count; i++)
             {
                 TerrainEdit edit = _edits[editIndices[i]];
@@ -169,7 +176,14 @@ namespace SDFTerrain.Terrain
 
             for (int i = 0; i < _chunkMembershipBuffer.Count; i++)
             {
-                _editsByChunk[_chunkMembershipBuffer[i]].Add(editIndex);
+                int chunkIndex = _chunkMembershipBuffer[i];
+                if (!_editsByChunk.TryGetValue(chunkIndex, out List<int> list))
+                {
+                    // Chunk was dynamically created after EnableChunkIndexing — initialize it.
+                    list = new List<int>();
+                    _editsByChunk[chunkIndex] = list;
+                }
+                list.Add(editIndex);
             }
         }
 
@@ -215,9 +229,8 @@ namespace SDFTerrain.Terrain
             // Second pass: remap chunk indices and remove references to pruned edits.
             if (_editsByChunk != null && pruned > 0)
             {
-                for (int c = 0; c < _editsByChunk.Length; c++)
+                foreach (List<int> chunkList in _editsByChunk.Values)
                 {
-                    List<int> chunkList = _editsByChunk[c];
                     int w = 0;
                     for (int r = 0; r < chunkList.Count; r++)
                     {
@@ -246,9 +259,9 @@ namespace SDFTerrain.Terrain
 
             if (_editsByChunk != null)
             {
-                for (int i = 0; i < _editsByChunk.Length; i++)
+                foreach (List<int> list in _editsByChunk.Values)
                 {
-                    _editsByChunk[i].Clear();
+                    list.Clear();
                 }
             }
         }
@@ -267,9 +280,9 @@ namespace SDFTerrain.Terrain
             // Rebuild chunk indexing for the new edits, if indexing is active.
             if (_editsByChunk != null)
             {
-                for (int i = 0; i < _editsByChunk.Length; i++)
+                foreach (List<int> list in _editsByChunk.Values)
                 {
-                    _editsByChunk[i].Clear();
+                    list.Clear();
                 }
 
                 for (int i = 0; i < _edits.Count; i++)

@@ -204,9 +204,8 @@ namespace SDFTerrain.Tests
             // Edit near the center of the grid, radius large enough to reach multiple chunks
             field.ApplyEdit(new TerrainEdit(new Vector2(0f, 0f), radius: 3f, isAdditive: true));
 
-            for (int i = 0; i < grid.ChunkCount; i++)
+            foreach (TerrainChunk chunk in grid.AllChunks)
             {
-                TerrainChunk chunk = grid.GetChunk(i);
                 // Sample at the chunk's center position
                 Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
@@ -226,9 +225,8 @@ namespace SDFTerrain.Tests
             // Large brush near surface — radius reaches the planet's center
             field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 15f, isAdditive: false));
 
-            for (int i = 0; i < grid.ChunkCount; i++)
+            foreach (TerrainChunk chunk in grid.AllChunks)
             {
-                TerrainChunk chunk = grid.GetChunk(i);
                 Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
@@ -248,9 +246,8 @@ namespace SDFTerrain.Tests
             field.ApplyEdit(new TerrainEdit(new Vector2(0f, 10f), radius: 3f, isAdditive: false));
             field.ApplyEdit(new TerrainEdit(new Vector2(-10f, 0f), radius: 3f, isAdditive: true));
 
-            for (int i = 0; i < grid.ChunkCount; i++)
+            foreach (TerrainChunk chunk in grid.AllChunks)
             {
-                TerrainChunk chunk = grid.GetChunk(i);
                 Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
@@ -344,9 +341,8 @@ namespace SDFTerrain.Tests
             field.PruneDeadEdits();
 
             // Verify chunk-indexed sampling still matches full-scan sampling
-            for (int i = 0; i < grid.ChunkCount; i++)
+            foreach (TerrainChunk chunk in grid.AllChunks)
             {
-                TerrainChunk chunk = grid.GetChunk(i);
                 Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
@@ -379,9 +375,8 @@ namespace SDFTerrain.Tests
 
             Assert.AreEqual(0, field.Edits.Count);
             // Verify chunk-indexed sampling still works (no stale indices)
-            for (int i = 0; i < grid.ChunkCount; i++)
+            foreach (TerrainChunk chunk in grid.AllChunks)
             {
-                TerrainChunk chunk = grid.GetChunk(i);
                 Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
@@ -413,6 +408,25 @@ namespace SDFTerrain.Tests
             TerrainChunk chunk = grid.GetChunkAt(samplePos);
             float actual = field.Sample(samplePos, chunk.Index);
             Assert.AreEqual(expected, actual, 1e-5f);
+        }
+
+        [Test]
+        public void EnableChunkIndexing_WithDynamicChunks_IndexCorrectly()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Apply an edit far outside the original grid — this creates a new chunk
+            Vector2 farPosition = new Vector2(50f, 50f);
+            field.ApplyEdit(new TerrainEdit(farPosition, radius: 3f, isAdditive: true));
+
+            // The edit should be indexed to the dynamically created chunk
+            TerrainChunk newChunk = grid.GetChunkAt(farPosition);
+            float indexed = field.Sample(farPosition, newChunk.Index);
+            float full = field.Sample(farPosition);
+
+            Assert.AreEqual(full, indexed, 1e-5f);
         }
     }
 }

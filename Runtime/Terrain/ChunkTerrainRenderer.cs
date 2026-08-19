@@ -12,6 +12,8 @@ namespace SDFTerrain.Terrain
     /// which rebuilds the whole planet as one mesh; this is the chunk-local counterpart introduced
     /// for Task 15. Each chunk gets its own child GameObject holding a MeshFilter/MeshRenderer/
     /// PolygonCollider2D so meshing/collider work for one chunk never touches another's mesh data.
+    /// Supports dynamic chunk expansion — when an edit targets a region with no existing chunk,
+    /// new chunks are created and rendered on demand.
     /// </summary>
     public class ChunkTerrainRenderer : MonoBehaviour
     {
@@ -31,7 +33,7 @@ namespace SDFTerrain.Terrain
 
         private TerrainField _field;
         private ChunkGrid _chunkGrid;
-        private ChunkView[] _chunkViews;
+        private readonly Dictionary<int, ChunkView> _chunkViews = new Dictionary<int, ChunkView>();
         private readonly List<int> _rectBuffer = new List<int>();
 
         private class ChunkView
@@ -71,10 +73,11 @@ namespace SDFTerrain.Terrain
             _field.EnableChunkIndexing(_chunkGrid);
 
             DestroyExistingChunkViews();
-            _chunkViews = new ChunkView[chunkGrid.ChunkCount];
-            for (int i = 0; i < chunkGrid.ChunkCount; i++)
+            _chunkViews.Clear();
+
+            foreach (TerrainChunk chunk in chunkGrid.AllChunks)
             {
-                _chunkViews[i] = CreateChunkView(i);
+                _chunkViews[chunk.Index] = CreateChunkView(chunk);
             }
         }
 
@@ -84,7 +87,7 @@ namespace SDFTerrain.Terrain
         /// </summary>
         public void RebuildDirtyChunks()
         {
-            if (_chunkViews == null)
+            if (_chunkViews.Count == 0)
             {
                 throw new InvalidOperationException("RebuildDirtyChunks requires Initialize to have been called first.");
             }
@@ -100,14 +103,14 @@ namespace SDFTerrain.Terrain
 
         /// <summary>
         /// Applies a brush stroke to the field this renderer was initialized with: persists the
-        /// resulting edit, marks every chunk the stroke's footprint overlaps dirty, and rebuilds
-        /// them. Per CLAUDE.md's "SDF is the source of truth" rule, the brush never touches a
-        /// mesh/collider directly — it mutates the field and triggers a derive of only the
-        /// affected chunks.
+        /// resulting edit, marks every chunk the stroke's footprint overlaps dirty (creating new
+        /// chunks if the stroke extends beyond existing coverage), and rebuilds them. Per
+        /// CLAUDE.md's "SDF is the source of truth" rule, the brush never touches a mesh/collider
+        /// directly — it mutates the field and triggers a derive of only the affected chunks.
         /// </summary>
         public void ApplyBrush(TerrainBrush brush, Vector2 localPosition)
         {
-            if (_chunkViews == null)
+            if (_chunkViews.Count == 0)
             {
                 throw new InvalidOperationException("ApplyBrush requires Initialize to have been called first.");
             }
@@ -116,6 +119,7 @@ namespace SDFTerrain.Terrain
             _field.ApplyEdit(edit);
 
             // Mark all chunks whose bounding box overlaps the brush footprint dirty.
+            // ChunksInRect creates new chunks if the brush extends beyond existing coverage.
             float minX = localPosition.x - brush.Radius;
             float maxX = localPosition.x + brush.Radius;
             float minY = localPosition.y - brush.Radius;
@@ -128,19 +132,26 @@ namespace SDFTerrain.Terrain
 
         /// <summary>
         /// Marks every chunk whose bounding box overlaps the given rectangle dirty.
+        /// Creates new chunks if the rectangle extends beyond existing coverage.
         /// </summary>
         private void MarkDirtyRect(float minX, float maxX, float minY, float maxY)
         {
             _chunkGrid.ChunksInRect(minX, maxX, minY, maxY, _rectBuffer);
             for (int i = 0; i < _rectBuffer.Count; i++)
             {
-                _chunkGrid.GetChunk(_rectBuffer[i]).MarkDirty();
+                int chunkIndex = _rectBuffer[i];
+                _chunkGrid.GetChunk(chunkIndex).MarkDirty();
             }
         }
 
         private void RebuildChunk(TerrainChunk chunk)
         {
-            ChunkView view = _chunkViews[chunk.Index];
+            // Ensure a ChunkView exists (may be a dynamically created chunk).
+            if (!_chunkViews.TryGetValue(chunk.Index, out ChunkView view))
+            {
+                view = CreateChunkView(chunk);
+                _chunkViews[chunk.Index] = view;
+            }
 
             CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, cellSize);
             MeshData meshData = MarchingSquaresMesher.Generate(sampled.Samples, sampled.Positions, uvScale);
@@ -156,9 +167,9 @@ namespace SDFTerrain.Terrain
             TerrainColliderBuilder.Apply(meshData, view.Collider);
         }
 
-        private ChunkView CreateChunkView(int index)
+        private ChunkView CreateChunkView(TerrainChunk chunk)
         {
-            var chunkObject = new GameObject($"Chunk_{index}");
+            var chunkObject = new GameObject($"Chunk_{chunk.Index}");
             chunkObject.transform.SetParent(transform, worldPositionStays: false);
 
             return new ChunkView
@@ -172,12 +183,7 @@ namespace SDFTerrain.Terrain
 
         private void DestroyExistingChunkViews()
         {
-            if (_chunkViews == null)
-            {
-                return;
-            }
-
-            foreach (ChunkView view in _chunkViews)
+            foreach (ChunkView view in _chunkViews.Values)
             {
                 if (view.GameObject == null)
                 {

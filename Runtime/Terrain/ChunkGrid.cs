@@ -5,32 +5,44 @@ using UnityEngine;
 namespace SDFTerrain.Terrain
 {
     /// <summary>
-    /// Divides a planet's bounding square into a fixed grid of equal rectangular chunks and
-    /// provides indexing, neighbor lookup, and dirty propagation over them. Grid dimensions are
-    /// fixed at construction — chunk streaming/LOD (variable resolution) is a later optimization
-    /// task. Chunks are stored in a 1D array indexed by row * cols + col.
+    /// Manages a collection of rectangular chunks that cover a planet's terrain. Starts with a
+    /// fixed grid covering the planet's bounding box, but can dynamically expand to create new
+    /// chunks when edits or lookups target positions outside the original grid. Chunks are stored
+    /// in a dictionary keyed by packed (col, row) coordinates and assigned sequential indices
+    /// via an auto-incrementing counter.
     /// </summary>
     public class ChunkGrid
     {
-        private readonly TerrainChunk[] _chunks;
+        private readonly Dictionary<long, TerrainChunk> _chunks = new Dictionary<long, TerrainChunk>();
         private readonly float _chunkSize;
         private readonly float _gridMinX;
         private readonly float _gridMinY;
+        private int _nextIndex;
 
-        public int ChunkCount => _chunks.Length;
+        public int ChunkCount => _chunks.Count;
         public int Cols => _cols;
         public int Rows => _rows;
         public float ChunkSize => _chunkSize;
 
+        /// <summary>Iterate over all chunks (original + dynamically created).</summary>
+        public IEnumerable<TerrainChunk> AllChunks => _chunks.Values;
+
         private readonly int _cols;
         private readonly int _rows;
 
+        /// <summary>Packs (col, row) into a unique long key for dictionary lookup.</summary>
+        static long MakeKey(int col, int row)
+        {
+            return (((long)col) << 32) | ((long)row & 0xffffffffL);
+        }
+
         /// <summary>
-        /// Creates a square-grid chunk system covering the planet's bounding box.
-        /// The grid spans from -gridExtent to +gridExtent in both axes, where gridExtent =
+        /// Creates a grid of chunks covering the planet's bounding box and extends it
+        /// dynamically for edits outside that region.
+        /// The initial grid spans from -gridExtent to +gridExtent in both axes, where gridExtent =
         /// cols * chunkSize, guaranteeing the planet of the given radius is fully covered.
         /// </summary>
-        /// <param name="radius">Planet radius (used to compute grid coverage).</param>
+        /// <param name="radius">Planet radius (used to compute initial grid coverage).</param>
         /// <param name="chunkSize">Side length of each square chunk in world units.</param>
         public ChunkGrid(float radius, float chunkSize)
         {
@@ -51,17 +63,15 @@ namespace SDFTerrain.Terrain
             _gridMinX = -(_cols * chunkSize) / 2f;
             _gridMinY = -(_rows * chunkSize) / 2f;
 
-            _chunks = new TerrainChunk[_cols * _rows];
             for (int row = 0; row < _rows; row++)
             {
                 for (int col = 0; col < _cols; col++)
                 {
-                    int index = row * _cols + col;
                     float minX = _gridMinX + col * chunkSize;
                     float maxX = minX + chunkSize;
                     float minY = _gridMinY + row * chunkSize;
                     float maxY = minY + chunkSize;
-                    _chunks[index] = new TerrainChunk(index, col, row, minX, maxX, minY, maxY);
+                    _chunks[MakeKey(col, row)] = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
                 }
             }
         }
@@ -91,29 +101,29 @@ namespace SDFTerrain.Terrain
             _gridMinX = -(_cols * chunkSize) / 2f;
             _gridMinY = -(_rows * chunkSize) / 2f;
 
-            _chunks = new TerrainChunk[_cols * _rows];
             for (int row = 0; row < _rows; row++)
             {
                 for (int col = 0; col < _cols; col++)
                 {
-                    int index = row * _cols + col;
                     float minX = _gridMinX + col * chunkSize;
                     float maxX = minX + chunkSize;
                     float minY = _gridMinY + row * chunkSize;
                     float maxY = minY + chunkSize;
-                    _chunks[index] = new TerrainChunk(index, col, row, minX, maxX, minY, maxY);
+                    _chunks[MakeKey(col, row)] = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
                 }
             }
         }
 
         public TerrainChunk GetChunk(int index)
         {
-            if (index < 0 || index >= _chunks.Length)
+            // Linear search by index — used primarily by debug views and tests.
+            // ChunkTerrainRenderer uses _chunkViews dictionary keyed by index, not this method.
+            foreach (TerrainChunk chunk in _chunks.Values)
             {
-                throw new ArgumentOutOfRangeException(nameof(index), index, "Chunk index out of range.");
+                if (chunk.Index == index)
+                    return chunk;
             }
-
-            return _chunks[index];
+            throw new ArgumentOutOfRangeException(nameof(index), index, "Chunk index not found.");
         }
 
         /// <summary>Returns the chunk whose bounding box contains the given position.</summary>
@@ -122,23 +132,34 @@ namespace SDFTerrain.Terrain
             int col = Mathf.FloorToInt((position.x - _gridMinX) / _chunkSize);
             int row = Mathf.FloorToInt((position.y - _gridMinY) / _chunkSize);
 
-            // Clamp to grid bounds — positions outside the grid are handled by the edge chunk.
-            col = Mathf.Clamp(col, 0, _cols - 1);
-            row = Mathf.Clamp(row, 0, _rows - 1);
+            long key = MakeKey(col, row);
+            if (_chunks.TryGetValue(key, out TerrainChunk existing))
+                return existing;
 
-            return _chunks[row * _cols + col];
+            // Position outside existing chunks — create a new one.
+            return CreateChunk(col, row);
         }
 
         /// <summary>Returns the chunk at the given grid coordinates with bounds validation.</summary>
         public TerrainChunk GetChunkAtGrid(int col, int row)
         {
-            if (col < 0 || col >= _cols || row < 0 || row >= _rows)
+            long key = MakeKey(col, row);
+            if (!_chunks.TryGetValue(key, out TerrainChunk chunk))
             {
                 throw new ArgumentOutOfRangeException(
-                    $"Grid coordinates ({col}, {row}) out of range. Grid is {_cols}x{_rows}.");
+                    $"No chunk at grid coordinates ({col}, {row}).");
             }
+            return chunk;
+        }
 
-            return _chunks[row * _cols + col];
+        /// <summary>Gets an existing chunk or creates a new one at the given grid coordinates.</summary>
+        public TerrainChunk GetOrCreateChunkAtGrid(int col, int row)
+        {
+            long key = MakeKey(col, row);
+            if (_chunks.TryGetValue(key, out TerrainChunk chunk))
+                return chunk;
+
+            return CreateChunk(col, row);
         }
 
         /// <summary>Direction for 4-neighbor grid lookups.</summary>
@@ -151,8 +172,8 @@ namespace SDFTerrain.Terrain
         }
 
         /// <summary>
-        /// Returns the neighboring chunk in the given direction, or null if the chunk is at the
-        /// grid edge (the planet is circular within a rectangular grid, not a torus).
+        /// Returns the neighboring chunk in the given direction, or null if no neighbor exists
+        /// (the planet is circular within a rectangular grid, not a torus).
         /// </summary>
         public TerrainChunk GetNeighbor(TerrainChunk chunk, ChunkNeighbor direction)
         {
@@ -180,12 +201,11 @@ namespace SDFTerrain.Terrain
                     break;
             }
 
-            if (neighborCol < 0 || neighborCol >= _cols || neighborRow < 0 || neighborRow >= _rows)
-            {
-                return null;
-            }
+            long key = MakeKey(neighborCol, neighborRow);
+            if (_chunks.TryGetValue(key, out TerrainChunk neighbor))
+                return neighbor;
 
-            return _chunks[neighborRow * _cols + neighborCol];
+            return null;
         }
 
         public void MarkDirtyAt(Vector2 position)
@@ -195,8 +215,9 @@ namespace SDFTerrain.Terrain
 
         /// <summary>
         /// Appends the index of every chunk whose bounding box overlaps the given rectangle to
-        /// <paramref name="result"/> (cleared first). Computes the overlapping column/row range
-        /// directly — no iteration over all chunks.
+        /// <paramref name="result"/> (cleared first). Creates new chunks if the rectangle extends
+        /// beyond the current chunk coverage. Computes the overlapping column/row range directly —
+        /// no iteration over all chunks.
         /// </summary>
         public void ChunksInRect(float minX, float maxX, float minY, float maxY, List<int> result)
         {
@@ -207,37 +228,44 @@ namespace SDFTerrain.Terrain
             int rowStart = Mathf.FloorToInt((minY - _gridMinY) / _chunkSize);
             int rowEnd = Mathf.CeilToInt((maxY - _gridMinY) / _chunkSize) - 1;
 
-            colStart = Mathf.Clamp(colStart, 0, _cols - 1);
-            colEnd = Mathf.Clamp(colEnd, 0, _cols - 1);
-            rowStart = Mathf.Clamp(rowStart, 0, _rows - 1);
-            rowEnd = Mathf.Clamp(rowEnd, 0, _rows - 1);
-
             for (int row = rowStart; row <= rowEnd; row++)
             {
                 for (int col = colStart; col <= colEnd; col++)
                 {
-                    result.Add(row * _cols + col);
+                    TerrainChunk chunk = GetOrCreateChunkAtGrid(col, row);
+                    result.Add(chunk.Index);
                 }
             }
         }
 
         public IEnumerable<TerrainChunk> DirtyChunks()
         {
-            foreach (TerrainChunk chunk in _chunks)
+            foreach (TerrainChunk chunk in _chunks.Values)
             {
                 if (chunk.IsDirty)
-                {
                     yield return chunk;
-                }
             }
         }
 
         public void ClearAllDirty()
         {
-            foreach (TerrainChunk chunk in _chunks)
+            foreach (TerrainChunk chunk in _chunks.Values)
             {
                 chunk.ClearDirty();
             }
+        }
+
+        private TerrainChunk CreateChunk(int col, int row)
+        {
+            float minX = _gridMinX + col * _chunkSize;
+            float maxX = minX + _chunkSize;
+            float minY = _gridMinY + row * _chunkSize;
+            float maxY = minY + _chunkSize;
+
+            long key = MakeKey(col, row);
+            TerrainChunk chunk = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
+            _chunks[key] = chunk;
+            return chunk;
         }
     }
 }

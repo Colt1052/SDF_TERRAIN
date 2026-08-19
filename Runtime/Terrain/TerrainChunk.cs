@@ -8,6 +8,7 @@ namespace SDFTerrain.Terrain
     public class TerrainChunk
     {
         public int Index { get; }
+        public long Key { get; }
         public int Col { get; }
         public int Row { get; }
         public float MinX { get; }
@@ -19,6 +20,7 @@ namespace SDFTerrain.Terrain
         public TerrainChunk(int index, int col, int row, float minX, float maxX, float minY, float maxY)
         {
             Index = index;
+            Key = (((long)col) << 32) | ((long)row & 0xffffffffL);
             Col = col;
             Row = row;
             MinX = minX;

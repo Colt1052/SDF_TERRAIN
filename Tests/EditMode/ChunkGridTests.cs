@@ -39,8 +39,8 @@ namespace SDFTerrain.Tests
             // Grid spans -5 to +5 in both axes (centered on origin).
             var grid = new ChunkGrid(5f, chunkSize: 5f);
 
-            // Chunk 0: col=0, row=0 -> minX=-5, maxX=0, minY=-5, maxY=0
-            TerrainChunk chunk0 = grid.GetChunk(0);
+            // Chunk at col=0, row=0 -> minX=-5, maxX=0, minY=-5, maxY=0
+            TerrainChunk chunk0 = grid.GetChunkAtGrid(0, 0);
             Assert.AreEqual(0, chunk0.Col);
             Assert.AreEqual(0, chunk0.Row);
             Assert.AreEqual(-5f, chunk0.MinX);
@@ -48,8 +48,8 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(-5f, chunk0.MinY);
             Assert.AreEqual(0f, chunk0.MaxY);
 
-            // Chunk 1: col=1, row=0 -> minX=0, maxX=5, minY=-5, maxY=0
-            TerrainChunk chunk1 = grid.GetChunk(1);
+            // Chunk at col=1, row=0 -> minX=0, maxX=5, minY=-5, maxY=0
+            TerrainChunk chunk1 = grid.GetChunkAtGrid(1, 0);
             Assert.AreEqual(1, chunk1.Col);
             Assert.AreEqual(0, chunk1.Row);
             Assert.AreEqual(0f, chunk1.MinX);
@@ -57,8 +57,8 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(-5f, chunk1.MinY);
             Assert.AreEqual(0f, chunk1.MaxY);
 
-            // Chunk 2: col=0, row=1 -> minX=-5, maxX=0, minY=0, maxY=5
-            TerrainChunk chunk2 = grid.GetChunk(2);
+            // Chunk at col=0, row=1 -> minX=-5, maxX=0, minY=0, maxY=5
+            TerrainChunk chunk2 = grid.GetChunkAtGrid(0, 1);
             Assert.AreEqual(0, chunk2.Col);
             Assert.AreEqual(1, chunk2.Row);
             Assert.AreEqual(-5f, chunk2.MinX);
@@ -66,8 +66,8 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(0f, chunk2.MinY);
             Assert.AreEqual(5f, chunk2.MaxY);
 
-            // Chunk 3: col=1, row=1 -> minX=0, maxX=5, minY=0, maxY=5
-            TerrainChunk chunk3 = grid.GetChunk(3);
+            // Chunk at col=1, row=1 -> minX=0, maxX=0, minY=0, maxY=5
+            TerrainChunk chunk3 = grid.GetChunkAtGrid(1, 1);
             Assert.AreEqual(1, chunk3.Col);
             Assert.AreEqual(1, chunk3.Row);
             Assert.AreEqual(0f, chunk3.MinX);
@@ -77,11 +77,11 @@ namespace SDFTerrain.Tests
         }
 
         [Test]
-        public void GetChunk_OutOfRange_Throws()
+        public void GetChunk_InvalidIndex_Throws()
         {
             var grid = new ChunkGrid(10f, chunkSize: 5f);
-            Assert.Throws<ArgumentOutOfRangeException>(() => grid.GetChunk(grid.ChunkCount));
             Assert.Throws<ArgumentOutOfRangeException>(() => grid.GetChunk(-1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => grid.GetChunk(999));
         }
 
         [Test]
@@ -104,30 +104,37 @@ namespace SDFTerrain.Tests
         {
             var grid = new ChunkGrid(5f, chunkSize: 5f);
 
-            // Position (3, 3) is in col=1, row=1 (chunk 3) for grid -10..+10
+            // Position (3, 3) is in col=1, row=1 for grid -5..+5
             TerrainChunk chunk = grid.GetChunkAt(new Vector2(3f, 3f));
 
             Assert.AreEqual(1, chunk.Col);
             Assert.AreEqual(1, chunk.Row);
-            Assert.AreEqual(3, chunk.Index);
         }
 
         [Test]
-        public void GetChunkAt_OutOfBounds_ClampToEdgeChunk()
+        public void GetChunkAt_OutOfBounds_CreatesNewChunk()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            int initialCount = grid.ChunkCount;
+
+            // Far positive position -> outside original grid, creates a new chunk
+            TerrainChunk chunk = grid.GetChunkAt(new Vector2(100f, 100f));
+
+            Assert.IsNotNull(chunk);
+            Assert.Greater(chunk.Col, grid.Cols - 1);
+            Assert.Greater(chunk.Row, grid.Rows - 1);
+            Assert.AreEqual(initialCount + 1, grid.ChunkCount);
+        }
+
+        [Test]
+        public void GetChunkAt_OutOfBounds_SecondCall_ReturnsSameChunk()
         {
             var grid = new ChunkGrid(5f, chunkSize: 5f);
 
-            // Far positive position -> clamped to bottom-right corner
-            TerrainChunk chunk = grid.GetChunkAt(new Vector2(100f, 100f));
+            TerrainChunk chunk1 = grid.GetChunkAt(new Vector2(100f, 100f));
+            TerrainChunk chunk2 = grid.GetChunkAt(new Vector2(100f, 100f));
 
-            Assert.AreEqual(grid.Cols - 1, chunk.Col);
-            Assert.AreEqual(grid.Rows - 1, chunk.Row);
-
-            // Far negative position -> clamped to top-left corner
-            TerrainChunk chunkNeg = grid.GetChunkAt(new Vector2(-100f, -100f));
-
-            Assert.AreEqual(0, chunkNeg.Col);
-            Assert.AreEqual(0, chunkNeg.Row);
+            Assert.AreSame(chunk1, chunk2);
         }
 
         [Test]
@@ -139,14 +146,12 @@ namespace SDFTerrain.Tests
 
             Assert.AreEqual(2, chunk.Col);
             Assert.AreEqual(1, chunk.Row);
-            Assert.AreEqual(1 * 4 + 2, chunk.Index); // row * cols + col
         }
 
         [Test]
         public void GetChunkAtGrid_OutOfBounds_Throws()
         {
             var grid = new ChunkGrid(10f, chunkSize: 5f);
-
             Assert.Throws<ArgumentOutOfRangeException>(() => grid.GetChunkAtGrid(4, 0));
             Assert.Throws<ArgumentOutOfRangeException>(() => grid.GetChunkAtGrid(0, 4));
             Assert.Throws<ArgumentOutOfRangeException>(() => grid.GetChunkAtGrid(-1, 0));
@@ -224,6 +229,19 @@ namespace SDFTerrain.Tests
         }
 
         [Test]
+        public void GetNeighbor_NewChunk_AtEdge_ReturnsNull()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+
+            // Create a new chunk far outside the grid
+            TerrainChunk newChunk = grid.GetChunkAt(new Vector2(100f, 100f));
+
+            // Neighbors don't exist yet
+            Assert.IsNull(grid.GetNeighbor(newChunk, ChunkGrid.ChunkNeighbor.Left));
+            Assert.IsNull(grid.GetNeighbor(newChunk, ChunkGrid.ChunkNeighbor.Bottom));
+        }
+
+        [Test]
         public void ChunksInRect_SingleChunk()
         {
             var grid = new ChunkGrid(10f, chunkSize: 5f);
@@ -233,7 +251,10 @@ namespace SDFTerrain.Tests
             grid.ChunksInRect(1f, 4f, -4f, -1f, result);
 
             Assert.AreEqual(1, result.Count);
-            Assert.AreEqual(6, result[0]); // row=1, col=2 -> 1*4+2 = 6
+            // Verify the returned chunk is at the expected position
+            TerrainChunk chunk = grid.GetChunk(result[0]);
+            Assert.AreEqual(2, chunk.Col);
+            Assert.AreEqual(1, chunk.Row);
         }
 
         [Test]
@@ -280,6 +301,26 @@ namespace SDFTerrain.Tests
         }
 
         [Test]
+        public void ChunksInRect_OutOfBounds_CreatesChunks()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            int initialCount = grid.ChunkCount;
+            var result = new List<int>();
+
+            // Rect far outside original grid
+            grid.ChunksInRect(20f, 30f, 20f, 30f, result);
+
+            Assert.Greater(result.Count, 0);
+            Assert.Greater(grid.ChunkCount, initialCount);
+            // All returned chunks should be outside the original grid
+            foreach (int index in result)
+            {
+                TerrainChunk chunk = grid.GetChunk(index);
+                Assert.True(chunk.Col >= grid.Cols || chunk.Row >= grid.Rows);
+            }
+        }
+
+        [Test]
         public void AllChunks_AreDirtyInitially()
         {
             var grid = new ChunkGrid(10f, chunkSize: 5f);
@@ -311,27 +352,70 @@ namespace SDFTerrain.Tests
         {
             var grid = new ChunkGrid(10f, chunkSize: 5f);
 
-            for (int row = 0; row < grid.Rows; row++)
+            foreach (TerrainChunk chunk in grid.AllChunks)
             {
-                for (int col = 0; col < grid.Cols; col++)
-                {
-                    TerrainChunk chunk = grid.GetChunkAtGrid(col, row);
+                // Chunk right edge should equal next chunk's left edge
+                TerrainChunk rightNeighbor = grid.GetNeighbor(chunk, ChunkGrid.ChunkNeighbor.Right);
+                if (rightNeighbor != null)
+                    Assert.AreEqual(chunk.MaxX, rightNeighbor.MinX, 1e-5f);
 
-                    // Chunk right edge should equal next chunk's left edge
-                    if (col < grid.Cols - 1)
-                    {
-                        TerrainChunk rightNeighbor = grid.GetChunkAtGrid(col + 1, row);
-                        Assert.AreEqual(chunk.MaxX, rightNeighbor.MinX, 1e-5f);
-                    }
-
-                    // Chunk top edge should equal row above's bottom edge
-                    if (row < grid.Rows - 1)
-                    {
-                        TerrainChunk topNeighbor = grid.GetChunkAtGrid(col, row + 1);
-                        Assert.AreEqual(chunk.MaxY, topNeighbor.MinY, 1e-5f);
-                    }
-                }
+                // Chunk top edge should equal row above's bottom edge
+                TerrainChunk topNeighbor = grid.GetNeighbor(chunk, ChunkGrid.ChunkNeighbor.Top);
+                if (topNeighbor != null)
+                    Assert.AreEqual(chunk.MaxY, topNeighbor.MinY, 1e-5f);
             }
+        }
+
+        [Test]
+        public void ChunkCount_IncludesDynamicChunks()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            int initialCount = grid.ChunkCount;
+
+            // Create a dynamic chunk
+            grid.GetChunkAt(new Vector2(100f, 100f));
+
+            Assert.AreEqual(initialCount + 1, grid.ChunkCount);
+        }
+
+        [Test]
+        public void AllChunks_IncludesDynamicChunks()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+
+            // Create a dynamic chunk
+            grid.GetChunkAt(new Vector2(100f, 100f));
+
+            var allChunks = grid.AllChunks.ToList();
+            Assert.AreEqual(grid.ChunkCount, allChunks.Count);
+
+            // The dynamic chunk should be in AllChunks
+            Assert.IsTrue(allChunks.Any(c => c.Col > grid.Cols - 1 || c.Row > grid.Rows - 1));
+        }
+
+        [Test]
+        public void GetOrCreateChunkAtGrid_CreatesMissingChunk()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            int initialCount = grid.ChunkCount;
+
+            TerrainChunk chunk = grid.GetOrCreateChunkAtGrid(10, 10);
+
+            Assert.IsNotNull(chunk);
+            Assert.AreEqual(10, chunk.Col);
+            Assert.AreEqual(10, chunk.Row);
+            Assert.AreEqual(initialCount + 1, grid.ChunkCount);
+        }
+
+        [Test]
+        public void GetOrCreateChunkAtGrid_ReturnsExistingChunk()
+        {
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+
+            TerrainChunk chunk1 = grid.GetOrCreateChunkAtGrid(2, 2);
+            TerrainChunk chunk2 = grid.GetOrCreateChunkAtGrid(2, 2);
+
+            Assert.AreSame(chunk1, chunk2);
         }
     }
 }

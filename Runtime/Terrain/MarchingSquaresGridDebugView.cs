@@ -85,9 +85,8 @@ namespace SDFTerrain.Terrain
 
             float markerSize = _cellSize * 0.15f;
 
-            for (int i = 0; i < _chunkGrid.ChunkCount; i++)
+            foreach (TerrainChunk chunk in _chunkGrid.AllChunks)
             {
-                TerrainChunk chunk = _chunkGrid.GetChunk(i);
                 CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, _cellSize);
 
                 CollectChunkGeometry(sampled, markerSize, solidCornerColor, airCornerColor, gridVertices, cornerVertices, cornerColors, crossingVertices);
