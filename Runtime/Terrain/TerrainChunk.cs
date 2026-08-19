@@ -1,22 +1,30 @@
 namespace SDFTerrain.Terrain
 {
     /// <summary>
-    /// A single angular slice of a planet's terrain. Owns only indexing/dirty state here; the
+    /// A single rectangular region of a planet's terrain. Owns only indexing/dirty state here; the
     /// mesh, collider, and density samples it will eventually own are added in later tasks
     /// (Meshing, Collision). Never regenerated wholesale — only marked dirty and rebuilt.
     /// </summary>
     public class TerrainChunk
     {
         public int Index { get; }
-        public float StartAngle { get; }
-        public float EndAngle { get; }
+        public int Col { get; }
+        public int Row { get; }
+        public float MinX { get; }
+        public float MaxX { get; }
+        public float MinY { get; }
+        public float MaxY { get; }
         public bool IsDirty { get; private set; }
 
-        public TerrainChunk(int index, float startAngle, float endAngle)
+        public TerrainChunk(int index, int col, int row, float minX, float maxX, float minY, float maxY)
         {
             Index = index;
-            StartAngle = startAngle;
-            EndAngle = endAngle;
+            Col = col;
+            Row = row;
+            MinX = minX;
+            MaxX = maxX;
+            MinY = minY;
+            MaxY = maxY;
             IsDirty = true;
         }
 

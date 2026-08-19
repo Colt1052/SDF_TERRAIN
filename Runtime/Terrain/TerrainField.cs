@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using SDFTerrain.Core;
 
 namespace SDFTerrain.Terrain
 {
@@ -88,7 +87,7 @@ namespace SDFTerrain.Terrain
         /// </summary>
         public float Sample(Vector2 localPosition)
         {
-            float angle = RadialMath.AngleOf(localPosition);
+            float angle = Core.RadialMath.AngleOf(localPosition);
             float distance = localPosition.magnitude - SurfaceRadiusAt(angle);
 
             for (int i = 0; i < _edits.Count; i++)
@@ -119,9 +118,8 @@ namespace SDFTerrain.Terrain
         /// <summary>
         /// Same as <see cref="Sample(Vector2)"/>, but scans only the edits registered against
         /// <paramref name="chunkIndex"/> instead of every edit ever applied — valid only because
-        /// an edit whose angular footprint (per <see cref="AffectedAngleRange"/>) cannot reach a
-        /// chunk's wedge can never be the Max/Min-selected contributor there, the same test
-        /// already used to decide which chunks a stroke dirties. Requires
+        /// an edit whose rectangular footprint cannot reach a chunk's bounding box can never be
+        /// the Max/Min-selected contributor there. Requires
         /// <see cref="EnableChunkIndexing"/> to have been called first.
         /// </summary>
         public float Sample(Vector2 localPosition, int chunkIndex)
@@ -131,7 +129,7 @@ namespace SDFTerrain.Terrain
                 throw new InvalidOperationException("Sample(Vector2, int) requires EnableChunkIndexing to have been called first.");
             }
 
-            float angle = RadialMath.AngleOf(localPosition);
+            float angle = Core.RadialMath.AngleOf(localPosition);
             float distance = localPosition.magnitude - SurfaceRadiusAt(angle);
 
             List<int> editIndices = _editsByChunk[chunkIndex];
@@ -158,35 +156,21 @@ namespace SDFTerrain.Terrain
 
         private void IndexEdit(int editIndex, TerrainEdit edit)
         {
-            (float minAngle, float maxAngle) = AffectedAngleRange(edit.LocalPosition, edit.Radius);
-            _chunkGrid.ChunksInRange(minAngle, maxAngle, _chunkMembershipBuffer);
+            // Rectangular overlap test: find all chunks whose bounding box overlaps the
+            // brush's circular footprint. This is conservative (a circular brush inside a
+            // square rect may touch slightly more chunks than necessary), but it is fast,
+            // correct, and never misses an affected chunk.
+            float brushMinX = edit.LocalPosition.x - edit.Radius;
+            float brushMaxX = edit.LocalPosition.x + edit.Radius;
+            float brushMinY = edit.LocalPosition.y - edit.Radius;
+            float brushMaxY = edit.LocalPosition.y + edit.Radius;
+
+            _chunkGrid.ChunksInRect(brushMinX, brushMaxX, brushMinY, brushMaxY, _chunkMembershipBuffer);
 
             for (int i = 0; i < _chunkMembershipBuffer.Count; i++)
             {
                 _editsByChunk[_chunkMembershipBuffer[i]].Add(editIndex);
             }
-        }
-
-        /// <summary>
-        /// The angular range (in radians, both wrapped to [0, 2*PI)) that a circular brush of the
-        /// given radius centered at localPosition subtends around the planet's origin. Used to
-        /// mark every chunk a brush stroke's footprint overlaps — not just the chunk directly
-        /// under the brush center — since a stroke near a chunk boundary can affect the
-        /// neighboring chunk's mesh too. When the brush circle contains the origin (radius
-        /// reaches all the way to the planet's center), the affected range is the full circle.
-        /// </summary>
-        public (float MinAngle, float MaxAngle) AffectedAngleRange(Vector2 localPosition, float radius)
-        {
-            float centerDistance = localPosition.magnitude;
-            if (centerDistance <= radius)
-            {
-                return (0f, 2f * Mathf.PI);
-            }
-
-            float centerAngle = RadialMath.AngleOf(localPosition);
-            float angularHalfWidth = Mathf.Asin(Mathf.Clamp(radius / centerDistance, -1f, 1f));
-
-            return (centerAngle - angularHalfWidth, centerAngle + angularHalfWidth);
         }
 
         /// <summary>Removes all persisted edits, leaving only the base sphere.</summary>

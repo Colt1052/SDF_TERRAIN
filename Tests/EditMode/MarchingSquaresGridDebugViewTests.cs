@@ -25,9 +25,9 @@ namespace SDFTerrain.Tests
         public void Initialize_NullField_Throws()
         {
             var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
 
-            Assert.Throws<ArgumentNullException>(() => view.Initialize(null, grid, 15f, 1f));
+            Assert.Throws<ArgumentNullException>(() => view.Initialize(null, grid, 1f));
         }
 
         [Test]
@@ -36,17 +36,7 @@ namespace SDFTerrain.Tests
             var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
             var field = new TerrainField(10f);
 
-            Assert.Throws<ArgumentNullException>(() => view.Initialize(field, null, 15f, 1f));
-        }
-
-        [Test]
-        public void Initialize_NonPositiveMaxRadius_Throws()
-        {
-            var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
-            var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
-
-            Assert.Throws<ArgumentOutOfRangeException>(() => view.Initialize(field, grid, 0f, 1f));
+            Assert.Throws<ArgumentNullException>(() => view.Initialize(field, null, 1f));
         }
 
         [Test]
@@ -54,9 +44,9 @@ namespace SDFTerrain.Tests
         {
             var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
 
-            Assert.Throws<ArgumentOutOfRangeException>(() => view.Initialize(field, grid, 15f, 0f));
+            Assert.Throws<ArgumentOutOfRangeException>(() => view.Initialize(field, grid, 0f));
         }
 
         [Test]
@@ -71,9 +61,9 @@ namespace SDFTerrain.Tests
         {
             var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
 
-            view.Initialize(field, grid, 15f, 1f);
+            view.Initialize(field, grid, 1f);
 
             foreach (Transform child in _gameObject.transform)
             {
@@ -86,8 +76,8 @@ namespace SDFTerrain.Tests
         {
             var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
-            view.Initialize(field, grid, 15f, 1f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            view.Initialize(field, grid, 1f);
 
             view.Refresh();
 
@@ -108,12 +98,12 @@ namespace SDFTerrain.Tests
         {
             var view = _gameObject.AddComponent<MarchingSquaresGridDebugView>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
 
-            view.Initialize(field, grid, 15f, 1f);
+            view.Initialize(field, grid, 1f);
             int childCountAfterFirst = _gameObject.transform.childCount;
 
-            view.Initialize(field, grid, 15f, 1f);
+            view.Initialize(field, grid, 1f);
             int childCountAfterSecond = _gameObject.transform.childCount;
 
             Assert.AreEqual(childCountAfterFirst, childCountAfterSecond);

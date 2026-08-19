@@ -198,19 +198,17 @@ namespace SDFTerrain.Tests
         public void ChunkIndexedSample_MatchesFullScanSample_ForEditsNearChunkBoundary()
         {
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4); // boundaries at 0, PI/2, PI, 3PI/2.
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             field.EnableChunkIndexing(grid);
 
-            // Edit centered just past a chunk boundary, radius large enough to reach into the
-            // neighboring chunk too.
-            Vector2 boundaryPoint = RadialMath.PositionAt(Mathf.PI / 2f, 10f);
-            field.ApplyEdit(new TerrainEdit(boundaryPoint, radius: 2f, isAdditive: true));
+            // Edit near the center of the grid, radius large enough to reach multiple chunks
+            field.ApplyEdit(new TerrainEdit(new Vector2(0f, 0f), radius: 3f, isAdditive: true));
 
             for (int i = 0; i < grid.ChunkCount; i++)
             {
                 TerrainChunk chunk = grid.GetChunk(i);
-                float midAngle = (chunk.StartAngle + chunk.EndAngle) / 2f;
-                Vector2 sample = RadialMath.PositionAt(midAngle, 10f);
+                // Sample at the chunk's center position
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
                 float actual = field.Sample(sample, chunk.Index);
@@ -222,17 +220,16 @@ namespace SDFTerrain.Tests
         public void ChunkIndexedSample_MatchesFullScanSample_ForEditReachingCenter()
         {
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             field.EnableChunkIndexing(grid);
 
-            // Radius reaches the planet's center, so AffectedAngleRange marks every chunk.
+            // Large brush near surface — radius reaches the planet's center
             field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 15f, isAdditive: false));
 
             for (int i = 0; i < grid.ChunkCount; i++)
             {
                 TerrainChunk chunk = grid.GetChunk(i);
-                float midAngle = (chunk.StartAngle + chunk.EndAngle) / 2f;
-                Vector2 sample = RadialMath.PositionAt(midAngle, 5f);
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
                 float actual = field.Sample(sample, chunk.Index);
@@ -244,7 +241,7 @@ namespace SDFTerrain.Tests
         public void ChunkIndexedSample_MatchesFullScanSample_WithMixedAdditiveAndSubtractiveEdits()
         {
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             field.EnableChunkIndexing(grid);
 
             field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
@@ -254,8 +251,7 @@ namespace SDFTerrain.Tests
             for (int i = 0; i < grid.ChunkCount; i++)
             {
                 TerrainChunk chunk = grid.GetChunk(i);
-                float midAngle = (chunk.StartAngle + chunk.EndAngle) / 2f;
-                Vector2 sample = RadialMath.PositionAt(midAngle, 10f);
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f, (chunk.MinY + chunk.MaxY) * 0.5f);
 
                 float expected = field.Sample(sample);
                 float actual = field.Sample(sample, chunk.Index);
@@ -274,17 +270,17 @@ namespace SDFTerrain.Tests
         public void ChunkIndexedSample_EditAppliedAfterEnableChunkIndexing_IsIndexed()
         {
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(4);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             field.EnableChunkIndexing(grid);
 
             Vector2 brushCenter = new Vector2(10f, 0f);
-            float before = field.Sample(brushCenter, grid.GetChunkAt(0f).Index);
+            TerrainChunk targetChunk = grid.GetChunkAt(brushCenter);
+            float before = field.Sample(brushCenter, targetChunk.Index);
 
             field.ApplyEdit(new TerrainEdit(brushCenter, radius: 3f, isAdditive: true));
 
-            int chunkIndex = grid.GetChunkAt(0f).Index;
-            Assert.Greater(field.Sample(brushCenter, chunkIndex), before);
-            Assert.AreEqual(field.Sample(brushCenter), field.Sample(brushCenter, chunkIndex), 1e-5f);
+            Assert.Greater(field.Sample(brushCenter, targetChunk.Index), before);
+            Assert.AreEqual(field.Sample(brushCenter), field.Sample(brushCenter, targetChunk.Index), 1e-5f);
         }
     }
 }

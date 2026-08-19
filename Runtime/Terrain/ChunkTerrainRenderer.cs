@@ -31,10 +31,8 @@ namespace SDFTerrain.Terrain
 
         private TerrainField _field;
         private ChunkGrid _chunkGrid;
-        private ChunkSeamCache _seamCache;
-        private float _maxRadius;
         private ChunkView[] _chunkViews;
-        private readonly List<int> _dirtyRangeBuffer = new List<int>();
+        private readonly List<int> _rectBuffer = new List<int>();
 
         private class ChunkView
         {
@@ -69,8 +67,6 @@ namespace SDFTerrain.Terrain
 
             _field = field;
             _chunkGrid = chunkGrid;
-            _seamCache = new ChunkSeamCache(chunkGrid);
-            _maxRadius = maxRadius;
 
             _field.EnableChunkIndexing(_chunkGrid);
 
@@ -119,42 +115,30 @@ namespace SDFTerrain.Terrain
             TerrainEdit edit = brush.ToEdit(localPosition);
             _field.ApplyEdit(edit);
 
-            (float minAngle, float maxAngle) = _field.AffectedAngleRange(localPosition, brush.Radius);
-            MarkDirtyRange(minAngle, maxAngle);
+            // Mark all overlapping chunks dirty. Expand by one cellSize so that
+            // boundary-straddling cells are caught (the sampler expands each chunk's lattice
+            // by 1 cell, so a brush whose rect barely touches a chunk's strict bounds may still
+            // affect that chunk's rendered mesh).
+            float padding = cellSize;
+            float minX = localPosition.x - brush.Radius - padding;
+            float maxX = localPosition.x + brush.Radius + padding;
+            float minY = localPosition.y - brush.Radius - padding;
+            float maxY = localPosition.y + brush.Radius + padding;
+
+            MarkDirtyRect(minX, maxX, minY, maxY);
 
             RebuildDirtyChunks();
         }
 
         /// <summary>
-        /// Marks every chunk overlapping the angular range [minAngle, maxAngle] dirty, plus the
-        /// chunk immediately outside each end of that span. Walks chunk boundaries rather than an
-        /// arbitrary angle stride so it can never skip a chunk regardless of chunk count or brush
-        /// radius. A full-circle range (minAngle == 0 and maxAngle == 2*PI, as returned by
-        /// AffectedAngleRange when the brush reaches the planet's center) marks every chunk.
-        ///
-        /// The one-chunk-further-out padding matters because CartesianChunkFieldSampler samples
-        /// each chunk's lattice a cell beyond its own strict [StartAngle, EndAngle) wedge (so its
-        /// boundary cells have a neighbor sample to interpolate against) — an edit whose angular
-        /// footprint never crosses a neighbor's strict wedge can still land inside that neighbor's
-        /// padded margin and change what it would render there. Without also rebuilding that
-        /// neighbor, its mesh goes stale right at the shared edge: a brush stroke that stays fully
-        /// inside one chunk but close to the border would visibly seam against the next chunk's
-        /// unrebuilt boundary.
+        /// Marks every chunk whose bounding box overlaps the given rectangle dirty.
         /// </summary>
-        private void MarkDirtyRange(float minAngle, float maxAngle)
+        private void MarkDirtyRect(float minX, float maxX, float minY, float maxY)
         {
-            _chunkGrid.ChunksInRange(minAngle, maxAngle, _dirtyRangeBuffer);
-            for (int i = 0; i < _dirtyRangeBuffer.Count; i++)
+            _chunkGrid.ChunksInRect(minX, maxX, minY, maxY, _rectBuffer);
+            for (int i = 0; i < _rectBuffer.Count; i++)
             {
-                _chunkGrid.GetChunk(_dirtyRangeBuffer[i]).MarkDirty();
-            }
-
-            if (_dirtyRangeBuffer.Count > 0 && _dirtyRangeBuffer.Count < _chunkGrid.ChunkCount)
-            {
-                int first = _dirtyRangeBuffer[0];
-                int last = _dirtyRangeBuffer[_dirtyRangeBuffer.Count - 1];
-                _chunkGrid.GetPreviousChunk(first).MarkDirty();
-                _chunkGrid.GetNextChunk(last).MarkDirty();
+                _chunkGrid.GetChunk(_rectBuffer[i]).MarkDirty();
             }
         }
 
@@ -162,7 +146,7 @@ namespace SDFTerrain.Terrain
         {
             ChunkView view = _chunkViews[chunk.Index];
 
-            CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, _maxRadius, cellSize, _seamCache);
+            CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, cellSize);
             MeshData meshData = MarchingSquaresMesher.Generate(sampled.Samples, sampled.Positions, uvScale);
 
             view.Mesh = MeshDataConverter.ToUnityMesh(meshData, view.Mesh);

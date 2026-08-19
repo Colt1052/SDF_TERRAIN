@@ -18,7 +18,7 @@ namespace SDFTerrain.Terrain
         [SerializeField] private PlanetSettings settings;
         [SerializeField] private int seed = 1;
         [SerializeField] private float radius = 30f;
-        [SerializeField] private int chunkCount = 8;
+        [SerializeField] private float chunkSize = 15f;
 
         private void Start()
         {
@@ -26,7 +26,7 @@ namespace SDFTerrain.Terrain
             planet.Initialize(settings, seed, radius, settings.GravityStrength);
 
             TerrainField field = PlanetGenerator.GenerateBaseShape(radius, planet.Seed);
-            ChunkGrid chunkGrid = new ChunkGrid(chunkCount);
+            ChunkGrid chunkGrid = new ChunkGrid(radius, chunkSize);
 
             ChunkTerrainRenderer renderer = GetComponent<ChunkTerrainRenderer>();
             renderer.Initialize(field, chunkGrid, radius);
@@ -35,7 +35,7 @@ namespace SDFTerrain.Terrain
             SDFDebugView sdfDebugView = GetComponent<SDFDebugView>();
             MarchingSquaresGridDebugView gridDebugView = GetComponent<MarchingSquaresGridDebugView>();
             sdfDebugView.Initialize(field, radius);
-            gridDebugView.Initialize(field, chunkGrid, radius, renderer.CellSize);
+            gridDebugView.Initialize(field, chunkGrid, renderer.CellSize);
 
             renderer.TerrainChanged += sdfDebugView.NotifyTerrainChanged;
             renderer.TerrainChanged += gridDebugView.NotifyTerrainChanged;

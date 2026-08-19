@@ -25,8 +25,6 @@ namespace SDFTerrain.Terrain
 
         private TerrainField _field;
         private ChunkGrid _chunkGrid;
-        private ChunkSeamCache _seamCache;
-        private float _maxRadius;
         private float _cellSize;
         private bool _initialized;
 
@@ -42,7 +40,7 @@ namespace SDFTerrain.Terrain
             public Mesh Mesh;
         }
 
-        public void Initialize(TerrainField field, ChunkGrid chunkGrid, float maxRadius, float cellSize)
+        public void Initialize(TerrainField field, ChunkGrid chunkGrid, float cellSize)
         {
             if (field == null)
             {
@@ -54,11 +52,6 @@ namespace SDFTerrain.Terrain
                 throw new ArgumentNullException(nameof(chunkGrid));
             }
 
-            if (maxRadius <= 0f)
-            {
-                throw new ArgumentOutOfRangeException(nameof(maxRadius), maxRadius, "Max radius must be positive.");
-            }
-
             if (cellSize <= 0f)
             {
                 throw new ArgumentOutOfRangeException(nameof(cellSize), cellSize, "Cell size must be positive.");
@@ -66,8 +59,6 @@ namespace SDFTerrain.Terrain
 
             _field = field;
             _chunkGrid = chunkGrid;
-            _seamCache = new ChunkSeamCache(chunkGrid);
-            _maxRadius = maxRadius;
             _cellSize = cellSize;
             _initialized = true;
 
@@ -96,7 +87,7 @@ namespace SDFTerrain.Terrain
             for (int i = 0; i < _chunkGrid.ChunkCount; i++)
             {
                 TerrainChunk chunk = _chunkGrid.GetChunk(i);
-                CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, _maxRadius, _cellSize, _seamCache);
+                CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, _cellSize);
 
                 CollectChunkGeometry(sampled, markerSize, solidCornerColor, airCornerColor, gridVertices, cornerVertices, cornerColors, crossingVertices);
             }

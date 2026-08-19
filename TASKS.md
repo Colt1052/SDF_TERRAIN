@@ -257,21 +257,25 @@ Tests:
 * Neighbor correctness
 * Dirty propagation
 
-Notes: `TerrainChunk` (index, angular range, dirty flag) and `ChunkGrid`
-(`Runtime/Terrain/`) added, dividing a planet's circumference into a fixed
-number of equal angular slices (per ARCHITECTURE.md's angular/radial
-chunking decision). `GetChunkAt(angle)` indexes by wrapped angle;
-`GetNextChunk`/`GetPreviousChunk` wrap correctly across the 0/2π seam.
-Chunks start dirty (so a fresh planet always builds its initial mesh);
-`MarkDirtyAt`/`DirtyChunks()`/`ClearAllDirty` drive propagation. Chunk
-density-sample storage, mesh, and collider ownership are deferred to Meshing/
-Collision tasks (7, 9, 10) — this task only establishes indexing and dirty
-state, consistent with ARCHITECTURE.md's chunk shape being finalized once
-Marching Squares (Task 9) lands. Tests cover out-of-range lookup, angle
-wrapping (including negative angles and the just-below-2π boundary), seam
-wraparound for next/previous, full-circle coverage without gaps/overlap, and
-dirty-set correctness. Verified structurally only — no Unity CLI available
-here.
+Notes: `TerrainChunk` (index, col, row, rectangular bounding box, dirty flag)
+and `ChunkGrid` (`Runtime/Terrain/`) added, dividing the planet's bounding
+square into a fixed 2D grid of equal square chunks (per ARCHITECTURE.md's
+Cartesian chunking decision, revised Task 15.10). `GetChunkAt(Vector2
+position)` computes (col, row) from position, clamping to grid bounds;
+`GetChunkAtGrid(col, row)` validates coordinates explicitly;
+`GetNeighbor(chunk, direction)` returns the 4-directional neighbor or null at
+edges. `ChunksInRect(minX, maxX, minY, maxY, result)` computes overlapping
+column/row range directly — no iteration over all chunks. Chunks start dirty;
+`MarkDirtyAt(Vector2)`/`DirtyChunks()`/`ClearAllDirty` drive propagation.
+Chunk density-sample storage, mesh, and collider ownership are deferred to
+Meshing/Collision tasks (7, 9, 10) — this task only establishes indexing and
+dirty state. Tests cover constructor validation (radius, chunkSize), grid
+dimensions, bounding box correctness, position-based lookups (center, edges,
+corners, out-of-bounds clamping), coordinate-based lookups, 4-directional
+neighbor tests (including null at boundaries), rectangular dirty marking,
+single/multi/full-grid/partial `ChunksInRect` overlap, and contiguous grid
+(no gaps between adjacent chunks). Verified structurally only — no Unity CLI
+available here.
 
 ---
 
@@ -579,37 +583,37 @@ gained a `Generate(samples, positions, uvScale)` overload alongside the
 existing `Generate(samples, cellSize, origin, uvScale)` — both now funnel
 into a shared private `EmitCell` taking raw corner samples/positions, so the
 Marching Squares case table exists in exactly one place. The new overload
-accepts an explicit non-uniform position grid (`Vector2[,]`) instead of
-deriving positions from a uniform cell size, because chunks are angular
-wedges (radial rows, angular columns), not axis-aligned rectangles — the
-original overload and all its call sites/tests are untouched.
-`CartesianChunkFieldSampler.Sample(field, chunk, maxRadius, cellSize,
-seamCache)` (`Runtime/Terrain/`) is the chunk-local counterpart to Task 11's
-`TerrainFieldSampler`: it samples one `TerrainChunk`'s exact
-[StartAngle, EndAngle] wedge from radius 0 to maxRadius onto a Cartesian
-lattice. Each chunk's lattice is expanded by one cell of margin so that
-boundary-straddling cells are fully included. The raw terrain SDF at each
-lattice point is combined with a wedge mask via `Mathf.Max` (CSG-AND) to
-clip the mesh at the chunk boundary. `ChunkTerrainRenderer`
-(`Runtime/Terrain/`) is the chunk-owning renderer TASKS.md/SCOPE.md call for:
-one child GameObject (MeshFilter/MeshRenderer/PolygonCollider2D) per chunk,
-created once in `Initialize`, with `RebuildDirtyChunks()` iterating only
-`ChunkGrid.DirtyChunks()` (Task 6) — chunks not reported dirty keep their
-existing mesh/collider instance untouched, satisfying "never regenerate an
-entire planet; only dirty chunks rebuild." This is a new, separate component
-from Task 11's `TerrainRenderer` (whole-planet single mesh) rather than a
-replacement — both remain valid entry points. Tests
-(`CartesianChunkFieldSamplerTests`) cover dimension/argument validation, that
-a chunk's first sampled column matches its StartAngle position, and seam
-equality between adjacent chunks. `ChunkTerrainRendererTests` cover the
-no-Initialize guard, one child per chunk, dirty flags clearing after rebuild,
-local rebuilds (`RebuildDirtyChunks_OnlyRebuildsChunksMarkedDirty`), and
-mesh-instance reuse on repeated rebuilds. Verified structurally only — no
-Unity CLI available here.
+accepts an explicit non-uniform position grid (`Vector2[,]`) so chunks can
+sample at arbitrary lattice positions. `CartesianChunkFieldSampler.Sample(field,
+chunk, cellSize)` (`Runtime/Terrain/`) is the chunk-local counterpart to
+Task 11's `TerrainFieldSampler`: it samples one `TerrainChunk`'s rectangular
+bounding box onto a Cartesian lattice, expanded by one cell in each direction
+so boundary-straddling cells are fully included. No clipping mask is applied —
+each lattice point simply calls `field.Sample(position)`. Points outside the
+planet are naturally air (positive SDF), so Marching Squares produces no
+contour in all-air regions. `ChunkTerrainRenderer` (`Runtime/Terrain/`) is
+the chunk-owning renderer TASKS.md/SCOPE.md call for: one child GameObject
+(MeshFilter/MeshRenderer/PolygonCollider2D) per chunk, created once in
+`Initialize`, with `RebuildDirtyChunks()` iterating only `ChunkGrid.DirtyChunks()`
+(Task 6) — chunks not reported dirty keep their existing mesh/collider instance
+untouched, satisfying "never regenerate an entire planet; only dirty chunks
+rebuild." This is a new, separate component from Task 11's `TerrainRenderer`
+(whole-planet single mesh) rather than a replacement — both remain valid entry
+points. `TerrainField.EnableChunkIndexing(ChunkGrid)` maps each edit to the
+chunks whose bounding boxes overlap the brush's circular footprint (via
+`ChunksInRect`). Tests (`CartesianChunkFieldSamplerTests`) cover
+dimension/argument validation, center-is-solid, lattice positions are cell-size
+multiples, adjacent chunks share boundary points with identical values, and
+edge chunks produce air where the planet surface doesn't reach.
+`ChunkTerrainRendererTests` cover the no-Initialize guard, one child per
+chunk, dirty flags clearing after rebuild, local rebuilds (only affected
+chunks rebuild), mesh-instance reuse on repeated rebuilds, and boundary brushes
+marking overlapping chunks. Verified structurally only — no Unity CLI available
+here.
 
 ---
 
-## 15.1. Chunk seam gap fix (seam margin in CartesianChunkFieldSampler) ✅ DONE
+## 15.1. Chunk seam gap fix (seam margin in CartesianChunkFieldSampler) ✅ DONE → Superseded
 
 Follow-up to Task 15 (Chunk rebuilding), raised by visible seam gaps at chunk
 boundaries in-editor: every chunk combined its sampled terrain SDF with a
@@ -626,35 +630,16 @@ signed differently for points on opposite sides of the ray, so the mask values
 remained asymmetric. Same direction, opposite sign.
 
 Fix: lattice points within a 2-cell perpendicular margin of either boundary
-ray now bypass the wedge mask entirely and use the raw terrain SDF directly.
-Both neighboring chunks sample the same lattice points in the overlap strip
-(created by `ComputeLatticeBounds` 1-cell expansion), and feeding both the
-same terrain value guarantees identical Marching Squares topology at the seam.
-The mesh may extend up to one cell past the boundary ray, but the neighbor
-chunk renders the same triangles there — visually seamless, minor overdraw.
+ray bypassed the wedge mask and used the raw terrain SDF directly. Both
+neighboring chunks sample the same lattice points in the overlap strip, and
+feeding both the same terrain value guarantees identical Marching Squares
+topology at the seam.
 
-Changes (`Runtime/Terrain/CartesianChunkFieldSampler.cs`):
-- `IsWithinSeamMargin(position, dirStart, dirEnd, cellSize)` — true when a
-  lattice point lies within 2×cellSize of either boundary ray (forward side
-  only, via `IsNearRay` helper).
-- Sampling loop: when within the seam margin, use `terrainValue` directly
-  instead of `Mathf.Max(terrainValue, WedgeMask(...))`.
-- Class doc comment updated to describe the seam margin approach (replacing
-  the now-stale `previousSeam`/`nextSeam` parameter description that
-  described an API that never existed).
-
-Tests (`Tests/EditMode/CartesianChunkFieldSamplerTests.cs`):
-- `Sample_AdjacentChunks_NearSeamPointsUseTerrainNotMask` — asserts that at a
-  shared lattice point near (but not on) the boundary ray, both chunks produce
-  the raw terrain SDF, not the steep mask value.
-- `Sample_FarFromSeam_StillClippedByWedgeMask` — sanity check that interior
-  points well inside the wedge remain correctly solid (the seam margin does
-  not affect far-from-boundary sampling).
-
-The existing `Sample_AdjacentChunks_ShareIdenticalSamplesAtSharedLatticePoints`
-test should now also pass for all shared points (it previously failed for
-near-boundary points where one chunk used terrain and the other used mask).
-Verified structurally only — no Unity CLI available here.
+**Superseded by Task 15.10:** The wedge-to-square chunk migration eliminated
+the root cause entirely. Square chunks share boundary lattice points that
+sample the same field at the same position — no wedge masks, no seam margins,
+no `ChunkSeamCache`, no asymmetric SDF values. The seam gap problem no longer
+exists.
 
 ---
 
@@ -891,6 +876,102 @@ regardless of what feeds it. Verified structurally only — no Unity CLI availab
 here; running the Test Runner in-editor, and painting dig/build/smooth strokes to
 confirm they remain smoothly circular with no separate strength knob, are the
 outstanding acceptance checks.
+
+---
+
+## 15.10. Convert chunk system from wedge shapes to square chunks ✅ DONE
+
+Follow-up to Tasks 6/15 (Chunk system / Chunk rebuilding), raised by the
+inherent complexity of angular wedges: a brush near the planet center spans
+all angles, marking every chunk dirty (all wedges converge at origin).
+`CartesianChunkFieldSampler` had to compute bounding boxes from angular
+sectors, apply wedge masks via CSG, handle reflex wedges, and maintain a
+2-cell seam margin. `ChunkSeamCache` existed solely because floating-point
+boundary angles differed between adjacent chunks.
+
+Acceptance:
+
+* The planet renders as a complete circle (same visual as before).
+* Chunk borders visible as a rectangular grid (not radial lines).
+* Dig/build brushes produce smooth circular holes (unchanged — SDF is
+  unchanged).
+* A brush near the planet center only dirties ~4 chunks (vs. all chunks
+  before).
+* No visible seams between chunks.
+* Dirty chunk rebuild only touches affected chunks.
+
+Files deleted (1):
+
+* `ChunkSeamCache.cs` — Square chunk boundaries are exact floats
+  (`col * chunkSize`), so adjacent chunks share bit-identical edges by
+  construction. No boundary direction caching needed.
+
+Files modified (12 production + 6 test files):
+
+* `TerrainChunk.cs` — Replaced `StartAngle`/`EndAngle` with `Col`, `Row`,
+  `MinX`, `MaxX`, `MinY`, `MaxY`. Constructor takes grid coordinates +
+  bounding box.
+* `ChunkGrid.cs` — Complete rewrite: 2D grid with `_chunkSize`, `_cols`,
+  `_rows`. Grid spans `-gridExtent` to `+gridExtent` where
+  `gridExtent = cols * chunkSize`. Position-based `GetChunkAt(Vector2)`,
+  coordinate-based `GetChunkAtGrid(col, row)`, 4-directional
+  `GetNeighbor(chunk, direction)`, `ChunksInRect(minX, maxX, minY, maxY)`,
+  `MarkDirtyAt(Vector2)`. Legacy `ChunkGrid(int chunkCount)` constructor
+  preserved as `[Obsolete]`.
+* `CartesianChunkFieldSampler.cs` — Major simplification: `Sample(field,
+  chunk, cellSize)` with no `maxRadius` or `seamCache` parameters. Removed
+  all wedge mask logic (`WedgeMask`, `WedgeMaskSteepness`, `IsWithinSeamMargin`,
+  `IsNearRay`, `Cross`, reflex wedge handling, angular `ComputeLatticeBounds`).
+  Each lattice point simply samples `field.Sample(position)`. Points outside
+  the planet are naturally air (positive SDF) — Marching Squares produces no
+  contour in all-air regions.
+* `TerrainField.cs` — `IndexEdit` replaced angular membership with rectangular
+  overlap. Removed `AffectedAngleRange` entirely (no longer needed).
+* `ChunkTerrainRenderer.cs` — Rectangle-based dirty marking via
+  `MarkDirtyRect(minX, maxX, minY, maxY)`. Removed seam cache, angular range
+  buffer, and neighbor padding logic.
+* `TerrainRenderer.cs` — `DrawChunkBorders` draws grid lines instead of radial
+  rays.
+* `MarchingSquaresGridDebugView.cs` — Removed seam cache. Updated sampler
+  calls to new signature.
+* `PlanetDemo.cs` — Updated constructor: `ChunkGrid(radius, chunkSize)`
+  instead of `ChunkGrid(chunkCount)`.
+* Tests updated to match: `ChunkGridTests`, `CartesianChunkFieldSamplerTests`,
+  `TerrainFieldTests`, `ChunkTerrainRendererTests`,
+  `MarchingSquaresGridDebugViewTests`.
+
+Key design decisions:
+
+1. **No boundary clipping**: Each chunk samples freely within its bounding
+   box. Chunks partially outside the planet render empty (all-air → no
+   mesh). Same visual result for the visible planet area, vastly simpler code.
+2. **1-cell margin preserved**: Adjacent chunks naturally share boundary
+   lattice points with identical terrain values — no seam cache needed.
+3. **Grid edges return null**: `GetNeighbor` at the grid boundary returns
+   null rather than wrapping. The planet is circular within a rectangular
+   grid.
+4. **Terrain noise unchanged**: The noise system samples by angle, independent
+   of chunk shape. Zero changes.
+5. **MarchingSquaresMesher unchanged**: Pure function of input samples.
+   Already handles non-uniform position grids.
+6. **RadialMath unchanged**: Used for noise, gravity, player orientation.
+   Square chunks don't eliminate the planet's circular nature, just the chunk
+   indexing.
+
+Verified structurally only — no Unity CLI available here.
+
+Bug fix (post-merge): `ChunkGrid` grid bounds were offset to the bottom-left
+quadrant. `_gridMinX = -_cols * chunkSize` placed the grid at [-full_extent, 0]
+instead of centered on the origin, so only 25% of the planet (the bottom-left
+quadrant where both axes are negative) had chunks to render it. The constructor
+docstring already described the correct centered behavior — the code just didn't
+match. Fixed both constructors: `_gridMinX = -(_cols * chunkSize) / 2f` so the
+grid spans symmetrically from -half_extent to +half_extent. `TerrainRenderer`
+debug border drawing used the same asymmetric formula and was corrected to
+match. `ChunkGridTests.Constructor_ChunkBoundingBoxesAreCorrect` and two
+`ChunksInRect` test comments updated to reflect the centered bounds. Verified
+in-editor: full planet circle visible across all four quadrants, brush editing
+works correctly at chunk edges everywhere.
 
 ---
 

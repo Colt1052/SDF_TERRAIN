@@ -70,12 +70,26 @@ namespace SDFTerrain.Terrain
         private void DrawChunkBorders()
         {
             Gizmos.color = Color.yellow;
-            for (int i = 0; i < _chunkGrid.ChunkCount; i++)
+            Vector3 origin = transform.position;
+
+            float chunkSize = _chunkGrid.ChunkSize;
+            float gridMinX = -(_chunkGrid.Cols * chunkSize) / 2f;
+            float gridMaxX = (_chunkGrid.Cols * chunkSize) / 2f;
+            float gridMinY = -(_chunkGrid.Rows * chunkSize) / 2f;
+            float gridMaxY = (_chunkGrid.Rows * chunkSize) / 2f;
+
+            // Draw vertical grid lines (chunk column boundaries)
+            for (int col = 0; col <= _chunkGrid.Cols; col++)
             {
-                TerrainChunk chunk = _chunkGrid.GetChunk(i);
-                Vector3 direction = Core.RadialMath.DirectionAt(chunk.StartAngle);
-                Vector3 origin = transform.position;
-                Gizmos.DrawLine(origin, origin + direction * 1000f);
+                float x = gridMinX + col * chunkSize;
+                Gizmos.DrawLine(origin + new Vector3(x, gridMinY, 0f), origin + new Vector3(x, gridMaxY, 0f));
+            }
+
+            // Draw horizontal grid lines (chunk row boundaries)
+            for (int row = 0; row <= _chunkGrid.Rows; row++)
+            {
+                float y = gridMinY + row * chunkSize;
+                Gizmos.DrawLine(origin + new Vector3(gridMinX, y, 0f), origin + new Vector3(gridMaxX, y, 0f));
             }
         }
 

@@ -53,9 +53,8 @@ Each layer only depends on layers below it. Rendering and collision never write 
 
 #### Terrain (`Runtime/Terrain/`) — Phase 2+
 - **TerrainField** — the SDF data structure: sampling, modification, serialization interface. Authoritative geometry source.
-- **TerrainChunk** — owns a region of density samples, its generated mesh, collider, and dirty flag.
-- **ChunkGrid** — chunk creation, indexing (e.g. by angular/radial cell), neighbor lookup, dirty propagation.
-- **ChunkSeamCache** — caches boundary direction vectors between adjacent chunks so both sides compute the same ray, eliminating bit-drift at the seam.
+- **TerrainChunk** — owns a rectangular region of density samples, its generated mesh, collider, and dirty flag.
+- **ChunkGrid** — chunk creation, 2D grid indexing (col/row), 4-directional neighbor lookup, dirty propagation. Chunks are square cells on a grid centered on the planet's origin (`_gridMin = -(count * chunkSize) / 2`), covering the planet's bounding box symmetrically in all quadrants.
 - **PlanetGenerator** — deterministic generation pipeline (sphere → noise → layers → caves → ore → materials), driven entirely by `Planet.Seed`.
 
 #### Meshing / Collision (`Runtime/Meshing/`) — Phase 2+
@@ -101,16 +100,14 @@ No step here ever touches a mesh or collider directly; edits only ever target th
 
 ### 3.3 Chunk Seam Strategy
 
-Adjacent chunks share a 1-cell lattice margin (each chunk's bounding box is
-expanded by one cell in `ComputeLatticeBounds`). To prevent visible gaps where
-the wedge mask creates asymmetric SDF values at shared cell edges, lattice
-points within a 2-cell perpendicular margin of either boundary ray use the raw
-terrain SDF directly, bypassing the wedge mask. Both neighboring chunks
-therefore produce identical Marching Squares topology at the seam. The
-`ChunkSeamCache` supplies bit-identical boundary direction vectors so the
-margin check is symmetric. The mesh may extend up to one cell past the boundary
-ray, but the neighbor chunk renders the same triangles there — visually
-seamless, minor overdraw only.
+Chunks are square cells on a regular Cartesian grid. Each chunk's lattice is
+expanded by one cell in each direction so boundary-straddling cells have a
+neighbor sample to interpolate against. Because every chunk samples the *same*
+global Cartesian lattice, adjacent chunks naturally share boundary lattice
+points with identical terrain values — no seam cache, wedge masks, or margin
+logic is needed. The SDF is sampled freely within each chunk's bounding box;
+lattice points outside the planet's surface read as air (positive SDF), so
+Marching Squares produces no contour in all-air regions.
 
 ---
 
@@ -128,7 +125,7 @@ seamless, minor overdraw only.
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Terrain representation | Continuous SDF (CPU-side arrays initially) | SCOPE.md mandates continuous, non-grid/voxel terrain; SDF supports smooth deformation and marching-squares meshing |
-| Chunking shape | Angular/radial cells around planet center | Matches planet-centric design; avoids axis-aligned seams around a circular body |
+| Chunking shape | Square Cartesian grid covering planet bounding box | Simple position-based indexing, exactly 4 neighbors, no wedge masks, no seam cache. Chunks partially outside the planet render empty (all-air → no mesh). |
 | Meshing algorithm | Marching Squares (2D) | Explicitly named in TASKS.md #9; standard, testable, well-understood |
 | Randomness | Seeded RNG only, sourced from planet DNA | CLAUDE.md determinism requirement; never `UnityEngine.Random` in generation |
 | Configuration | ScriptableObjects (`PlanetSettings`) | CLAUDE.md data-driven requirement; avoids scattered constants |
@@ -136,7 +133,7 @@ seamless, minor overdraw only.
 | Persistence | Store seed + edits only; regenerate the rest | SCOPE.md "Saving" section — never serialize reconstructable terrain |
 | Collision | `PolygonCollider2D` derived from mesh/chunk data | 2D project; matches TASKS.md #10 |
 | Assembly structure | Dedicated `.asmdef` for Runtime code, separate for Tests | CLAUDE.md Task 1.1 ("Create assembly definitions"); keeps compile times low and enforces the layering above |
-| Seam handling | 2-cell seam margin: raw terrain SDF near boundary rays, no wedge mask | Adjacent chunks sample the same lattice points in their 1-cell overlap strip; using terrain (not mask) on both sides guarantees identical Marching Squares topology at the seam. The `ChunkSeamCache` ensures both chunks use the same boundary direction vectors. |
+| Seam handling | No seam logic needed: shared lattice points | Adjacent square chunks sample the same global Cartesian lattice. Shared boundary lattice points produce identical terrain values by construction (same field, same position), so Marching Squares generates contiguous mesh edges automatically. |
 
 ---
 
@@ -203,7 +200,7 @@ Assets/SDF_Terrain/
 |------|--------|------------|
 | No git repository | No version control, work loss risk | Confirm with user before beginning implementation; recommend init if absent |
 | Chunk shape (angular vs. Cartesian) not yet validated against meshing algorithm | Rework needed once Marching Squares (Task 9) lands | Keep chunk indexing behind an interface; defer final shape decision to Task 6 design step, informed by Task 9 |
-| Visible seam gaps at chunk boundaries | Mesh contour vertices placed at different positions on shared cell edges (wedge mask asymmetric across chunks) | **Mitigated** (Task 15.1): `CartesianChunkFieldSampler` uses raw terrain SDF within a 2-cell seam margin instead of the wedge mask, so both chunks produce identical Marching Squares output at the seam. `ChunkSeamCache` ensures symmetric boundary directions. |
+| Visible seam gaps at chunk boundaries | Mesh contour vertices placed at different positions on shared cell edges | **Resolved** (Task 15.10): Square Cartesian chunks share boundary lattice points that sample the same field at the same position. Identical terrain values guarantee identical Marching Squares output at every seam — no runtime seam logic needed. |
 | Determinism regressions from incidental `UnityEngine.Random` use | Non-reproducible planets | Enforce via code review / analyzer; seeded RNG is the only entry point exposed to generation code |
 | Overlap with sibling `EuroAtmoClaude` module (atmosphere) | Duplicate coordinate/math utilities | `PlanetCoordinates`/radial math here should be reused by atmosphere module later rather than reimplemented; flag if duplication appears |
 | Task 1 (assembly definitions, analyzers) has no prior art in this folder | Ambiguity on analyzer ruleset | Mirror whatever ruleset (if any) `EuroAtmoClaude` or project root uses; otherwise use Unity defaults and note the gap |

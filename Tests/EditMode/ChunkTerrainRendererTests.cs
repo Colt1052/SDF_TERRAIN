@@ -33,11 +33,11 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
 
             renderer.Initialize(field, grid, maxRadius: 15f);
 
-            Assert.AreEqual(6, _gameObject.transform.childCount);
+            Assert.AreEqual(grid.ChunkCount, _gameObject.transform.childCount);
         }
 
         [Test]
@@ -45,7 +45,7 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
 
             renderer.RebuildDirtyChunks();
@@ -63,7 +63,7 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
 
             renderer.RebuildDirtyChunks();
@@ -76,20 +76,21 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
             renderer.RebuildDirtyChunks();
 
-            Mesh untouchedMeshBefore = _gameObject.transform.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
+            // Pick a chunk away from the dig location
+            TerrainChunk untouchedChunk = grid.GetChunkAtGrid(grid.Cols - 1, grid.Rows - 1);
+            Mesh untouchedMeshBefore = _gameObject.transform.GetChild(untouchedChunk.Index).GetComponent<MeshFilter>().sharedMesh;
 
-            // Dig near chunk 0's angular range only, then mark just that chunk dirty.
+            // Dig near a specific position, then mark only that chunk dirty.
             field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 6f, isAdditive: true));
-            grid.MarkDirtyAt(0f);
+            grid.MarkDirtyAt(new Vector2(10f, 0f));
             renderer.RebuildDirtyChunks();
 
-            Mesh untouchedMeshAfter = _gameObject.transform.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
+            Mesh untouchedMeshAfter = _gameObject.transform.GetChild(untouchedChunk.Index).GetComponent<MeshFilter>().sharedMesh;
 
-            // Chunk 2's mesh instance is untouched by a rebuild scoped to chunk 0.
             Assert.AreSame(untouchedMeshBefore, untouchedMeshAfter);
         }
 
@@ -98,16 +99,17 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
             renderer.RebuildDirtyChunks();
 
-            Mesh firstMesh = _gameObject.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+            TerrainChunk targetChunk = grid.GetChunkAt(new Vector2(0f, 0f));
+            Mesh firstMesh = _gameObject.transform.GetChild(targetChunk.Index).GetComponent<MeshFilter>().sharedMesh;
 
-            grid.MarkDirtyAt(0f);
+            grid.MarkDirtyAt(new Vector2(0f, 0f));
             renderer.RebuildDirtyChunks();
 
-            Mesh secondMesh = _gameObject.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+            Mesh secondMesh = _gameObject.transform.GetChild(targetChunk.Index).GetComponent<MeshFilter>().sharedMesh;
 
             Assert.AreSame(firstMesh, secondMesh);
         }
@@ -126,7 +128,7 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
             renderer.RebuildDirtyChunks();
 
@@ -142,7 +144,7 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
             renderer.RebuildDirtyChunks();
 
@@ -154,21 +156,23 @@ namespace SDFTerrain.Tests
         }
 
         [Test]
-        public void ApplyBrush_OnlyRebuildsOverlappingChunk()
+        public void ApplyBrush_OnlyRebuildsOverlappingChunks()
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
             renderer.RebuildDirtyChunks();
 
-            Mesh untouchedMeshBefore = _gameObject.transform.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
+            // Pick a corner chunk far from the brush
+            TerrainChunk farChunk = grid.GetChunkAtGrid(grid.Cols - 1, grid.Rows - 1);
+            Mesh untouchedMeshBefore = _gameObject.transform.GetChild(farChunk.Index).GetComponent<MeshFilter>().sharedMesh;
 
-            // Brush near angle 0 (chunk 0), well away from chunk 2's angular range.
+            // Small brush near a surface position
             var brush = new TerrainBrush(BrushMode.Remove, radius: 1f);
             renderer.ApplyBrush(brush, new Vector2(10f, 0f));
 
-            Mesh untouchedMeshAfter = _gameObject.transform.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
+            Mesh untouchedMeshAfter = _gameObject.transform.GetChild(farChunk.Index).GetComponent<MeshFilter>().sharedMesh;
             Assert.AreSame(untouchedMeshBefore, untouchedMeshAfter);
             Assert.AreEqual(0, System.Linq.Enumerable.Count(grid.DirtyChunks()));
         }
@@ -178,30 +182,30 @@ namespace SDFTerrain.Tests
         {
             var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
             var field = new TerrainField(10f);
-            var grid = new ChunkGrid(6);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
             renderer.Initialize(field, grid, maxRadius: 15f);
             renderer.RebuildDirtyChunks();
 
-            // Chunk boundary between chunk 0 and chunk 1 sits at angle 2*PI/6. Center the brush
-            // right on it with a radius wide enough to reach into both chunks' angular ranges.
-            float boundaryAngle = (2f * Mathf.PI) / 6f;
-            Vector2 position = Core.RadialMath.PositionAt(boundaryAngle, 10f);
+            // Place brush near a chunk boundary (at x=0, which is between col boundaries)
+            Vector2 position = new Vector2(0f, 10f);
 
-            Mesh chunk0Before = _gameObject.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
-            Mesh chunk1Before = _gameObject.transform.GetChild(1).GetComponent<MeshFilter>().sharedMesh;
+            TerrainChunk chunkA = grid.GetChunkAt(new Vector2(-0.5f, 10f));
+            TerrainChunk chunkB = grid.GetChunkAt(new Vector2(0.5f, 10f));
+
+            Mesh chunkAMeshBefore = _gameObject.transform.GetChild(chunkA.Index).GetComponent<MeshFilter>().sharedMesh;
+            Mesh chunkBMeshBefore = _gameObject.transform.GetChild(chunkB.Index).GetComponent<MeshFilter>().sharedMesh;
 
             var brush = new TerrainBrush(BrushMode.Remove, radius: 3f);
             renderer.ApplyBrush(brush, position);
 
-            Mesh chunk0After = _gameObject.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
-            Mesh chunk1After = _gameObject.transform.GetChild(1).GetComponent<MeshFilter>().sharedMesh;
+            Mesh chunkAMeshAfter = _gameObject.transform.GetChild(chunkA.Index).GetComponent<MeshFilter>().sharedMesh;
+            Mesh chunkBMeshAfter = _gameObject.transform.GetChild(chunkB.Index).GetComponent<MeshFilter>().sharedMesh;
 
             // Both chunks' mesh instances are reused (rebuilt in place) rather than untouched.
-            Assert.AreSame(chunk0Before, chunk0After);
-            Assert.AreSame(chunk1Before, chunk1After);
-            Assert.Greater(chunk0After.vertexCount, 0);
-            Assert.Greater(chunk1After.vertexCount, 0);
+            Assert.AreSame(chunkAMeshBefore, chunkAMeshAfter);
+            Assert.AreSame(chunkBMeshBefore, chunkBMeshAfter);
+            Assert.Greater(chunkAMeshAfter.vertexCount, 0);
+            Assert.Greater(chunkBMeshAfter.vertexCount, 0);
         }
-
     }
 }
