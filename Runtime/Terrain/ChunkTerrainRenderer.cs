@@ -115,15 +115,11 @@ namespace SDFTerrain.Terrain
             TerrainEdit edit = brush.ToEdit(localPosition);
             _field.ApplyEdit(edit);
 
-            // Mark all overlapping chunks dirty. Expand by one cellSize so that
-            // boundary-straddling cells are caught (the sampler expands each chunk's lattice
-            // by 1 cell, so a brush whose rect barely touches a chunk's strict bounds may still
-            // affect that chunk's rendered mesh).
-            float padding = cellSize;
-            float minX = localPosition.x - brush.Radius - padding;
-            float maxX = localPosition.x + brush.Radius + padding;
-            float minY = localPosition.y - brush.Radius - padding;
-            float maxY = localPosition.y + brush.Radius + padding;
+            // Mark all chunks whose bounding box overlaps the brush footprint dirty.
+            float minX = localPosition.x - brush.Radius;
+            float maxX = localPosition.x + brush.Radius;
+            float minY = localPosition.y - brush.Radius;
+            float maxY = localPosition.y + brush.Radius;
 
             MarkDirtyRect(minX, maxX, minY, maxY);
 

@@ -100,14 +100,14 @@ No step here ever touches a mesh or collider directly; edits only ever target th
 
 ### 3.3 Chunk Seam Strategy
 
-Chunks are square cells on a regular Cartesian grid. Each chunk's lattice is
-expanded by one cell in each direction so boundary-straddling cells have a
-neighbor sample to interpolate against. Because every chunk samples the *same*
-global Cartesian lattice, adjacent chunks naturally share boundary lattice
-points with identical terrain values — no seam cache, wedge masks, or margin
-logic is needed. The SDF is sampled freely within each chunk's bounding box;
-lattice points outside the planet's surface read as air (positive SDF), so
-Marching Squares produces no contour in all-air regions.
+Chunks are square cells on a regular Cartesian grid. Each chunk's lattice
+covers exactly the chunk's bounding box. Because every chunk samples the
+*same* global Cartesian lattice, adjacent chunks share boundary lattice points
+with identical terrain values — Marching Squares produces contiguous mesh
+edges at every seam. No seam cache, wedge masks, or margin logic is needed.
+The SDF is sampled freely within each chunk's bounding box; lattice points
+outside the planet's surface read as air (positive SDF), so Marching Squares
+produces no contour in all-air regions.
 
 ---
 

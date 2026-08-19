@@ -13,10 +13,10 @@ namespace SDFTerrain.Terrain
     /// Marching Squares produces no contour in all-air regions. Chunks that lie partially outside
     /// the planet simply render nothing for those regions.
     ///
-    /// The lattice is expanded by one cell in each direction so boundary-straddling cells have a
-    /// neighbor sample to interpolate against. Because every chunk samples the *same* global
-    /// Cartesian lattice, adjacent chunks naturally share boundary lattice points with identical
-    /// terrain values — no seam cache or special margin logic is needed.
+    /// The lattice covers exactly the chunk's bounding box. Because every chunk samples the *same*
+    /// global Cartesian lattice, adjacent chunks share boundary lattice points with identical
+    /// terrain values — Marching Squares produces contiguous mesh edges at every seam. No margin,
+    /// seam cache, or wedge mask is needed.
     /// </summary>
     public static class CartesianChunkFieldSampler
     {
@@ -34,8 +34,9 @@ namespace SDFTerrain.Terrain
 
         /// <summary>
         /// Samples the given chunk's rectangular bounding box onto a Cartesian lattice with the
-        /// given cell size (world units). The lattice is expanded by one cell in each direction
-        /// so boundary-straddling cells are fully included for correct Marching Squares interpolation.
+        /// given cell size (world units). The lattice covers exactly the chunk's bounding box;
+        /// adjacent chunks share boundary lattice points with identical terrain values, so
+        /// Marching Squares produces contiguous mesh edges at every seam.
         /// </summary>
         public static Result Sample(TerrainField field, TerrainChunk chunk, float cellSize)
         {
@@ -54,11 +55,11 @@ namespace SDFTerrain.Terrain
                 throw new ArgumentOutOfRangeException(nameof(cellSize), cellSize, "Cell size must be positive.");
             }
 
-            // Compute lattice index bounds: chunk bounding box expanded by 1 cell.
-            int ixMin = Mathf.FloorToInt(chunk.MinX / cellSize) - 1;
-            int ixMax = Mathf.CeilToInt(chunk.MaxX / cellSize) + 1;
-            int iyMin = Mathf.FloorToInt(chunk.MinY / cellSize) - 1;
-            int iyMax = Mathf.CeilToInt(chunk.MaxY / cellSize) + 1;
+            // Compute lattice index bounds: exactly the chunk bounding box.
+            int ixMin = Mathf.FloorToInt(chunk.MinX / cellSize);
+            int ixMax = Mathf.CeilToInt(chunk.MaxX / cellSize);
+            int iyMin = Mathf.FloorToInt(chunk.MinY / cellSize);
+            int iyMax = Mathf.CeilToInt(chunk.MaxY / cellSize);
 
             int width = ixMax - ixMin + 1;
             int height = iyMax - iyMin + 1;
@@ -74,14 +75,12 @@ namespace SDFTerrain.Terrain
                     float y = (iyMin + j) * cellSize;
                     var position = new Vector2(x, y);
 
-                    // Chunk-agnostic Sample(), not the chunk-indexed overload: chunks
-                    // intentionally sample an overlapping lattice near their shared boundary
-                    // (the 1-cell margin) so both sides agree on the border vertex position.
-                    // The chunk-indexed overload decides edit membership per chunk via a
-                    // coarse rectangular test, which is not guaranteed to treat a shared
-                    // boundary point identically from both chunks once an edit lands near
-                    // it. Scanning every edit here keeps the shared lattice points
-                    // bit-identical regardless of which chunk samples them.
+                    // Chunk-agnostic Sample(), not the chunk-indexed overload: adjacent chunks
+                    // share boundary lattice points that sample the same field at the same
+                    // position. Using the global sample ensures bit-identical values regardless
+                    // of which chunk samples them. The chunk-indexed overload decides edit
+                    // membership per chunk via a coarse rectangular test, which could treat a
+                    // shared boundary point differently from each chunk.
                     float terrainValue = field.Sample(position);
 
                     positions[i, j] = position;

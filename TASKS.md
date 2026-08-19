@@ -587,8 +587,8 @@ accepts an explicit non-uniform position grid (`Vector2[,]`) so chunks can
 sample at arbitrary lattice positions. `CartesianChunkFieldSampler.Sample(field,
 chunk, cellSize)` (`Runtime/Terrain/`) is the chunk-local counterpart to
 Task 11's `TerrainFieldSampler`: it samples one `TerrainChunk`'s rectangular
-bounding box onto a Cartesian lattice, expanded by one cell in each direction
-so boundary-straddling cells are fully included. No clipping mask is applied —
+bounding box onto a Cartesian lattice covering exactly the chunk's bounding
+box. No clipping mask is applied —
 each lattice point simply calls `field.Sample(position)`. Points outside the
 planet are naturally air (positive SDF), so Marching Squares produces no
 contour in all-air regions. `ChunkTerrainRenderer` (`Runtime/Terrain/`) is
@@ -945,8 +945,9 @@ Key design decisions:
 1. **No boundary clipping**: Each chunk samples freely within its bounding
    box. Chunks partially outside the planet render empty (all-air → no
    mesh). Same visual result for the visible planet area, vastly simpler code.
-2. **1-cell margin preserved**: Adjacent chunks naturally share boundary
-   lattice points with identical terrain values — no seam cache needed.
+2. **Shared boundary lattice points**: Adjacent chunks share boundary
+   lattice points with identical terrain values — no seam cache needed,
+   no overlapping mesh geometry at chunk edges.
 3. **Grid edges return null**: `GetNeighbor` at the grid boundary returns
    null rather than wrapping. The planet is circular within a rectangular
    grid.

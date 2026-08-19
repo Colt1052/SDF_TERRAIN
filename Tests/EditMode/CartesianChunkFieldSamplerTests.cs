@@ -202,7 +202,8 @@ namespace SDFTerrain.Tests
                 }
             }
 
-            // Lattice should extend beyond the chunk bounds (1-cell margin)
+            // Lattice should cover the chunk bounding box exactly
+            // (min lattice point <= Min boundary, max lattice point >= Max boundary)
             Assert.LessOrEqual(minX, chunk.MinX);
             Assert.GreaterOrEqual(maxX, chunk.MaxX);
             Assert.LessOrEqual(minY, chunk.MinY);
