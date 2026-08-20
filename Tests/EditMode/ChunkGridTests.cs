@@ -445,5 +445,54 @@ namespace SDFTerrain.Tests
             Assert.Greater(result.Count, 0);
             Assert.AreEqual(4, grid.ChunkCount); // no new chunks created
         }
+
+        [Test]
+        public void RemoveChunkAtGrid_RemovesExistingChunk()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            Assert.AreEqual(4, grid.ChunkCount);
+
+            bool removed = grid.RemoveChunkAtGrid(0, 0);
+
+            Assert.IsTrue(removed);
+            Assert.AreEqual(3, grid.ChunkCount);
+        }
+
+        [Test]
+        public void RemoveChunkAtGrid_MissingChunk_ReturnsFalse()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+
+            bool removed = grid.RemoveChunkAtGrid(10, 10);
+
+            Assert.IsFalse(removed);
+            Assert.AreEqual(4, grid.ChunkCount);
+        }
+
+        [Test]
+        public void HasChunkAtGrid_ExistingChunk_ReturnsTrue()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            Assert.IsTrue(grid.HasChunkAtGrid(0, 0));
+            Assert.IsTrue(grid.HasChunkAtGrid(1, 1));
+        }
+
+        [Test]
+        public void HasChunkAtGrid_MissingChunk_ReturnsFalse()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            Assert.IsFalse(grid.HasChunkAtGrid(10, 10));
+        }
+
+        [Test]
+        public void HasChunkAtGrid_AfterRemoval_ReturnsFalse()
+        {
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            Assert.IsTrue(grid.HasChunkAtGrid(0, 0));
+
+            grid.RemoveChunkAtGrid(0, 0);
+
+            Assert.IsFalse(grid.HasChunkAtGrid(0, 0));
+        }
     }
 }

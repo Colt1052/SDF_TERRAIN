@@ -320,6 +320,78 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(fullSample, indexedSample, 1e-5f);
         }
 
+        [Test]
+        public void ApplyBrush_BuildThenRemove_OutsideOriginalGrid_RemovesChunk()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            Vector2 farPosition = new Vector2(50f, 50f);
+
+            // Build terrain far from the planet
+            var buildBrush = new TerrainBrush(BrushMode.Add, radius: 3f);
+            renderer.ApplyBrush(buildBrush, farPosition);
+            Assert.Greater(grid.ChunkCount, 16); // new chunks created
+
+            // Delete the terrain we just built
+            var deleteBrush = new TerrainBrush(BrushMode.Remove, radius: 5f);
+            renderer.ApplyBrush(deleteBrush, farPosition);
+
+            // Chunks should have been removed (back to original grid count or fewer)
+            Assert.AreEqual(16, grid.ChunkCount);
+        }
+
+        [Test]
+        public void ApplyBrush_EmptyChunk_RecreatedOnBuild()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            Vector2 farPosition = new Vector2(50f, 50f);
+
+            // Build → creates chunk
+            var buildBrush = new TerrainBrush(BrushMode.Add, radius: 3f);
+            renderer.ApplyBrush(buildBrush, farPosition);
+            int afterBuild = grid.ChunkCount;
+            Assert.Greater(afterBuild, 16);
+
+            // Delete → removes chunk
+            var deleteBrush = new TerrainBrush(BrushMode.Remove, radius: 5f);
+            renderer.ApplyBrush(deleteBrush, farPosition);
+            Assert.AreEqual(16, grid.ChunkCount);
+
+            // Build again → recreates chunk
+            renderer.ApplyBrush(buildBrush, farPosition);
+            Assert.Greater(grid.ChunkCount, 16);
+
+            // The rebuilt terrain should be samplable
+            TerrainChunk chunk = grid.GetChunkAt(farPosition);
+            float sample = field.Sample(farPosition, chunk.Index);
+            Assert.Less(sample, field.BaseRadius);
+        }
+
+        [Test]
+        public void RebuildDirtyChunks_PlanetChunksNotRemoved()
+        {
+            // Verify that normal planet chunks (with terrain) are not removed
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+
+            int initialCount = grid.ChunkCount;
+            renderer.RebuildDirtyChunks();
+
+            // Planet chunks have terrain — none should be removed
+            Assert.AreEqual(initialCount, grid.ChunkCount);
+        }
+
         Mesh GetChunkMesh(ChunkTerrainRenderer renderer, TerrainChunk chunk)
         {
             foreach (Transform child in renderer.transform)

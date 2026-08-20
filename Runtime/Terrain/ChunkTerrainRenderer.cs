@@ -84,6 +84,8 @@ namespace SDFTerrain.Terrain
         /// <summary>
         /// Rebuilds only the chunks the grid currently reports dirty, then clears their dirty
         /// flags. Chunks not reported dirty keep their existing mesh/collider untouched.
+        /// Chunks that produce no geometry are removed entirely (GameObject destroyed, chunk
+        /// removed from grid) to keep the scene graph lean.
         /// </summary>
         public void RebuildDirtyChunks()
         {
@@ -92,9 +94,22 @@ namespace SDFTerrain.Terrain
                 throw new InvalidOperationException("RebuildDirtyChunks requires Initialize to have been called first.");
             }
 
+            // Collect empty chunk indices during rebuild so we can remove them after
+            // (modifying the grid during DirtyChunks() iteration would invalidate the enumerator).
+            List<int> emptyChunkIndices = new List<int>();
+
             foreach (TerrainChunk chunk in _chunkGrid.DirtyChunks())
             {
-                RebuildChunk(chunk);
+                if (RebuildChunk(chunk))
+                {
+                    emptyChunkIndices.Add(chunk.Index);
+                }
+            }
+
+            // Remove chunks that produced no geometry.
+            for (int i = 0; i < emptyChunkIndices.Count; i++)
+            {
+                RemoveEmptyChunk(emptyChunkIndices[i]);
             }
 
             _chunkGrid.ClearAllDirty();
@@ -147,7 +162,11 @@ namespace SDFTerrain.Terrain
             }
         }
 
-        private void RebuildChunk(TerrainChunk chunk)
+        /// <summary>
+        /// Rebuilds the mesh and collider for a chunk.
+        /// </summary>
+        /// <returns>True if the chunk produced no geometry (empty); false if it has content.</returns>
+        private bool RebuildChunk(TerrainChunk chunk)
         {
             // Ensure a ChunkView exists (may be a dynamically created chunk).
             if (!_chunkViews.TryGetValue(chunk.Index, out ChunkView view))
@@ -159,15 +178,23 @@ namespace SDFTerrain.Terrain
             CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, cellSize);
             MeshData meshData = MarchingSquaresMesher.Generate(sampled.Samples, sampled.Positions, uvScale);
 
-            view.Mesh = MeshDataConverter.ToUnityMesh(meshData, view.Mesh);
-            view.MeshFilter.sharedMesh = view.Mesh;
+            // Check if the chunk is empty (no geometry produced).
+            bool isEmpty = meshData.Vertices.Count == 0;
 
-            if (material != null)
+            if (!isEmpty)
             {
-                view.MeshRenderer.sharedMaterial = material;
+                view.Mesh = MeshDataConverter.ToUnityMesh(meshData, view.Mesh);
+                view.MeshFilter.sharedMesh = view.Mesh;
+
+                if (material != null)
+                {
+                    view.MeshRenderer.sharedMaterial = material;
+                }
+
+                TerrainColliderBuilder.Apply(meshData, view.Collider);
             }
 
-            TerrainColliderBuilder.Apply(meshData, view.Collider);
+            return isEmpty;
         }
 
         private ChunkView CreateChunkView(TerrainChunk chunk)
@@ -202,6 +229,38 @@ namespace SDFTerrain.Terrain
                     DestroyImmediate(view.GameObject);
                 }
             }
+        }
+
+        /// <summary>
+        /// Removes an empty chunk: destroys its GameObject, removes it from the view dictionary,
+        /// and removes it from the chunk grid.
+        /// </summary>
+        private void RemoveEmptyChunk(int chunkIndex)
+        {
+            if (!_chunkViews.TryGetValue(chunkIndex, out ChunkView view))
+            {
+                return;
+            }
+
+            // Destroy the GameObject (mesh, renderer, collider).
+            if (view.GameObject != null)
+            {
+                if (Application.isPlaying)
+                {
+                    Destroy(view.GameObject);
+                }
+                else
+                {
+                    DestroyImmediate(view.GameObject);
+                }
+            }
+
+            // Get chunk coordinates before removing from view dictionary.
+            TerrainChunk chunk = _chunkGrid.GetChunk(chunkIndex);
+
+            // Remove from tracking structures.
+            _chunkViews.Remove(chunkIndex);
+            _chunkGrid.RemoveChunkAtGrid(chunk.Col, chunk.Row);
         }
 
         private void OnDestroy()

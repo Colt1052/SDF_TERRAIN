@@ -276,5 +276,24 @@ namespace SDFTerrain.Terrain
             _chunks[key] = chunk;
             return chunk;
         }
+
+        /// <summary>
+        /// Removes the chunk at the given grid coordinates. Returns true if a chunk existed
+        /// and was removed; false if no chunk existed at those coordinates.
+        /// </summary>
+        public bool RemoveChunkAtGrid(int col, int row)
+        {
+            long key = MakeKey(col, row);
+            return _chunks.Remove(key);
+        }
+
+        /// <summary>
+        /// Checks if a chunk exists at the given grid coordinates.
+        /// </summary>
+        public bool HasChunkAtGrid(int col, int row)
+        {
+            long key = MakeKey(col, row);
+            return _chunks.ContainsKey(key);
+        }
     }
 }
