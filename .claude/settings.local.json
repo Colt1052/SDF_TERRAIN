@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -v \"\\\\.meta$\")"
+      "Bash(grep -v \"\\\\.meta$\")",
+      "Bash(powershell -Command \"New-Item -ItemType Directory -Path 'C:\\\\Users\\\\cvh27\\\\SDFPlanet\\\\Assets\\\\SDF_Terrain\\\\Runtime\\\\UI' -Force\")"
     ]
   }
 }
