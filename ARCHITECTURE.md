@@ -1,224 +1,172 @@
 # SDF_Terrain — Architecture Document
 
-**Version:** 1.0
-**Status:** Initial — pre-implementation
+**Version:** 2.0
+**Status:** Phase 1-3 implemented, Phase 4 in progress
 
 ---
 
-## 1. Current Project State
+## 1. Current State
 
-A fresh directory exists containing only specification documents (`CLAUDE.md`, `SCOPE.md`, `TASKS.md`) and this architecture file. No assembly definitions, no runtime code, no tests. This lives inside the `EulerAtmo` Unity 6 (6000.0.45f1) URP 2D project, alongside a sibling module `Assets/EuroAtmoClaude` (GPU compute-shader atmosphere simulation) that establishes this project's documentation and directory conventions.
+Phase 1 (Foundation), Phase 2 (Terrain), and Phase 3 (Terrain Editing) are implemented and tested. Phase 4 (Materials) has database + sampling; geological layers are next. See `TASKS.md` for the full list and `README.md` for the class directory.
 
-The Unity project already has 2D packages (`com.unity.feature.2d`), the Input System, URP, and the Test Framework installed — no new package dependencies are required for Phase 1–2 work.
+Unity 6 (6000.0.45f1), URP 2D, Input System, Test Framework installed.
 
 ---
 
-## 2. System Architecture
-
-### 2.1 Layered Model
+## 2. System Layers
 
 ```
 ┌─────────────────────────────────────────────────┐
-│         Rendering (Mesh, Materials)              │  ← Consumes generated mesh/collider only
+│   Brush UI / Input (BrushUI, BrushInputHandler)  │
 ├─────────────────────────────────────────────────┤
-│         Collision (PolygonCollider2D)            │  ← Derived, disposable
+│   Rendering (Mesh, Materials, Gizmos)            │
 ├─────────────────────────────────────────────────┤
-│         Meshing (Marching Squares)               │  ← Derived, disposable
+│   Collision (PolygonCollider2D)                  │
 ├─────────────────────────────────────────────────┤
-│         Chunk System (dirty tracking, indexing)  │
+│   Meshing (Marching Squares → MeshData)          │
 ├─────────────────────────────────────────────────┤
-│         Terrain SDF (authoritative data)         │  ← Source of truth
+│   Chunk System (dirty tracking, indexing)        │
 ├─────────────────────────────────────────────────┤
-│         Planet Generator (seeded, deterministic) │
+│   Terrain SDF (authoritative data)               │
 ├─────────────────────────────────────────────────┤
-│         Planet / PlanetManager (identity, lifetime)│
+│   Planet Generator (seeded, deterministic)       │
 ├─────────────────────────────────────────────────┤
-│         Core Math (coordinates, radial vectors)  │
+│   Planet / PlanetManager (identity, lifetime)    │
+├─────────────────────────────────────────────────┤
+│   Core Math (coordinates, radial vectors, RNG)   │
 └─────────────────────────────────────────────────┘
 ```
 
-Each layer only depends on layers below it. Rendering and collision never write back into the SDF; only brush/editing operations (Phase 3) mutate it.
-
-### 2.2 Component Breakdown (planned)
-
-#### Core (`Runtime/Core/`)
-- **PlanetCoordinates** — conversion between world space, planet-local space, and radial (angle, radius) space.
-- **RadialMath** — utility functions for radial vectors, surface normals, angular wrapping.
-- **SeededRandom** — deterministic RNG wrapper seeded from planet DNA; the only permitted source of randomness (never `UnityEngine.Random` directly in generation code).
-
-#### Planet (`Runtime/Planet/`)
-- **Planet** — MonoBehaviour/data component. Holds radius, seed, gravity strength, and a reference to its `PlanetSettings` (ScriptableObject). Thin — no generation or rendering logic.
-- **PlanetSettings** — ScriptableObject: radius range, density, seed override, archetype parameters.
-- **PlanetManager** — Registration, lookup by ID/position, spawn/despawn, update ordering across multiple planets. Plain C# class (or a thin MonoBehaviour singleton) — no per-planet simulation logic lives here.
-
-#### Terrain (`Runtime/Terrain/`) — Phase 2+
-- **TerrainField** — the SDF data structure: sampling, modification, serialization interface. Authoritative geometry source.
-- **TerrainChunk** — owns a rectangular region of density samples, its generated mesh, collider, and dirty flag.
-- **ChunkGrid** — chunk creation, 2D grid indexing (col/row), 4-directional neighbor lookup, dirty propagation. Chunks are square cells on a grid centered on the planet's origin (`_gridMin = -(count * chunkSize) / 2`), covering the planet's bounding box symmetrically in all quadrants.
-- **PlanetGenerator** — deterministic generation pipeline (sphere → noise → layers → caves → ore → materials), driven entirely by `Planet.Seed`.
-
-#### Meshing / Collision (`Runtime/Meshing/`) — Phase 2+
-- **MarchingSquaresMesher** — converts a chunk's density samples into a mesh (vertices, normals, UVs). Pure function of input samples — no side effects, fully testable in isolation.
-- **ColliderGenerator** — builds `PolygonCollider2D` paths from the same chunk data used for meshing.
-
-#### Debug (`Scripts/Debug/`)
-- Visualizations for chunk borders, density field, normals — added per-system as each system lands (per TASKS.md "Debug Visualization" requirement), not built as one monolithic tool.
-
-#### Tests (`Tests/EditMode/`, `Tests/PlayMode/`)
-- EditMode unit tests for math, coordinates, SDF sampling, meshing edge cases.
-- PlayMode/integration tests for chunk dirty propagation and multi-planet manager behavior.
+Each layer only depends on layers below it. Only brush/edit operations mutate the SDF.
 
 ---
 
-## 3. Data Flow
+## 3. Component Map
 
-### 3.1 Planet Generation Order (per SCOPE.md, must not be reordered)
+### Core (`Runtime/Core/`)
+- **RadialMath** — angle wrap, angle-of, position-at, surface normals.
+- **PlanetCoordinates** — world/local/radial conversions, gravity direction.
+- **SeededRandom** — xorshift32 PRNG. Only permitted randomness source.
 
-```
-Planet DNA (seed)
-  → Large-scale shape (sphere)
-  → Terrain height (noise)
-  → Geological layers
-  → Caves
-  → Ore
-  → Materials
-  → Vegetation
-  → Entities
-```
+### Planet (`Runtime/Planet/`)
+- **Planet** — thin MonoBehaviour: radius, seed, gravity, settings ref. Auto-registers with PlanetManager.
+- **PlanetSettings** — ScriptableObject config.
+- **PlanetManager** — static singleton. Registration, lookup by position, multi-planet list.
 
-### 3.2 Terrain Edit Flow (Phase 3+)
+### Terrain (`Runtime/Terrain/`)
+- **TerrainField** — the SDF. Sphere base + brush edits. CSG composition. Chunk-indexed sampling.
+- **TerrainEdit** — one brush stroke: position, radius, additive flag. Pure SDF cone.
+- **TerrainChunk** — square grid cell with bbox (col/row) and dirty flag.
+- **ChunkGrid** — 2D grid of chunks, centered on origin. Position/coordinate lookup, dirty tracking.
+- **CartesianChunkFieldSampler** — sample one chunk's bbox onto a lattice grid.
+- **TerrainRenderer** — whole-planet single-mesh renderer.
+- **ChunkTerrainRenderer** — per-chunk GameObject management, dirty-only rebuilds.
+- **TerrainBrush** — immutable struct: mode (Add/Remove/Smooth), radius.
+- **TerrainNoise** — seamless sine-harmonic noise. Configured by `TerrainNoiseSettings`.
+- **PlanetGenerator** — `GenerateBaseShape(radius, seed, noiseSettings)` → `TerrainField`.
 
-```
-Brush input → TerrainField.ApplyEdit (persists TerrainEdit)
-            → edit indexed into chunks whose bbox overlaps brush (EnableChunkIndexing)
-            → mark affected chunks dirty
-            → dirty chunks sample field via chunk-indexed Sample(position, chunkIndex)
-              (only scans edits registered to that chunk — O(local edits), not O(total))
-            → dirty chunks re-mesh (Marching Squares)
-            → dirty chunks regenerate collider
-            → renderer picks up updated mesh
-```
+### Brush (`Runtime/Terrain/Brush/`)
+- **BrushBehavior** — abstract ScriptableObject base for brush logic.
+- **BrushDefinition** — ScriptableObject: name, icon, behavior, parameter descriptors.
+- **BrushParameterDescriptor** — ScriptableObject: float parameter config (name, range, step).
+- **BrushController** — MonoBehaviour: active brush, parameters, events.
+- **StandardBrushBehavior** — Add/Remove implementation.
+- **SmoothBrushBehavior** — Smoothing implementation.
 
-No step here ever touches a mesh or collider directly; edits only ever target the SDF.
+### Meshing (`Runtime/Meshing/`)
+- **MarchingSquaresMesher** — sample grid → `MeshData`. Pure function. Asymptotic decider for saddles.
+- **MeshData** — vertex/triangle/normal/UV lists (no UnityEngine.Mesh dependency).
+- **MeshDataConverter** — `MeshData` → `UnityEngine.Mesh` (with reuse).
+- **ColliderContourBuilder** — extract closed boundary loops from `MeshData`.
+- **TerrainColliderBuilder** — apply contours to `PolygonCollider2D`.
 
-`PruneDeadEdits()` compacts zero-radius edits and remaps chunk indices atomically,
-called periodically to prevent unbounded list growth.
+### Materials (`Runtime/Materials/`)
+- **MaterialDefinition** — ScriptableObject: 9 physical properties (density, hardness, friction, etc.).
+- **MaterialDatabase** — static registry singleton, loads from Resources/Materials/.
+- **MaterialSampler** — assign materials to SDF positions based on band configuration.
+- **MaterialBand** — depth/position-based material assignment rule.
 
-### 3.3 Chunk Seam Strategy
-
-Chunks are square cells on a regular Cartesian grid. Each chunk's lattice
-covers exactly the chunk's bounding box. Because every chunk samples the
-*same* global Cartesian lattice, adjacent chunks share boundary lattice points
-with identical terrain values — Marching Squares produces contiguous mesh
-edges at every seam. No seam cache, wedge masks, or margin logic is needed.
-The SDF is sampled freely within each chunk's bounding box; lattice points
-outside the planet's surface read as air (positive SDF), so Marching Squares
-produces no contour in all-air regions.
-
----
-
-## 4. Coordinate System
-
-- **World space** — standard Unity world coordinates; a planet's `Transform.position` is its center.
-- **Planet-local space** — world position minus planet center, used for all radial math so generation is independent of where the planet sits in the world.
-- **Radial space** — `(angle, radius)` around planet-local origin; used for surface sampling and generation since planets are always circular/spherical in this 2D sandbox (per SCOPE.md "Planet-Centric Design").
-- Gravity direction is always `-normalize(worldPos - planetCenter)`; there is no global "up".
+### UI (`Runtime/UI/` + `Runtime/Terrain/`)
+- **BrushUI** — dynamic canvas: style selector buttons + parameter sliders.
+- **BrushInputHandler** — screen→world→planet-local input adapter.
+- **BrushToolbar** — toolbar-style brush selector.
+- **TerrainStats** — runtime statistics display.
+- **SDFDebugView** / **SDFDebugTexture** — SDF visualization.
 
 ---
 
-## 5. Technology Decisions
+## 4. Data Flow
+
+### Generation
+```
+Seed + Radius + NoiseSettings
+  → PlanetGenerator.GenerateBaseShape()
+    → TerrainField (sphere + noise)
+      → ChunkTerrainRenderer.RebuildDirtyChunks()
+        → CartesianChunkFieldSampler → MarchingSquaresMesher → MeshData
+          → MeshDataConverter → MeshFilter.sharedMesh
+          → ColliderContourBuilder → PolygonCollider2D
+```
+
+### Editing
+```
+Brush stroke → TerrainField.ApplyEdit(TerrainEdit)
+  → TerrainField.IndexEdit (packed col/row key)
+  → ChunkTerrainRenderer.MarkDirtyRect
+    → RebuildDirtyChunks (only dirty chunks)
+      → Empty chunks removed, new chunks created (Add mode only)
+```
+
+### Chunk Seam Strategy
+Square Cartesian chunks share boundary lattice points that sample the same field at the same position. Identical values → identical Marching Squares output at every seam. No seam logic needed.
+
+### Edit Sampling
+`EnableChunkIndexing()` maps each edit to overlapping grid cells (packed col/row key). `Sample(position, chunkIndex)` scans only local edits — O(chunk_local_edits), not O(total_lifetime_edits). `PruneDeadEdits()` reclaims zero-radius entries. CSG Max/Min commutativity guarantees excluding distant edits produces identical results.
+
+---
+
+## 5. Coordinate System
+
+- **World space** — Unity world coordinates. Planet center = `Transform.position`.
+- **Planet-local space** — `worldPos - planetCenter`. Used for all terrain operations.
+- **Radial space** — `(angle, radius)` around planet-local origin. Used for noise and surface sampling.
+- Gravity direction: `-normalize(worldPos - planetCenter)`. No global "up".
+
+---
+
+## 6. Technology Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Terrain representation | Continuous SDF (CPU-side arrays initially) | SCOPE.md mandates continuous, non-grid/voxel terrain; SDF supports smooth deformation and marching-squares meshing |
-| Chunking shape | Square Cartesian grid covering planet bounding box | Simple position-based indexing, exactly 4 neighbors, no wedge masks, no seam cache. Chunks partially outside the planet render empty (all-air → no mesh). |
-| Meshing algorithm | Marching Squares (2D) | Explicitly named in TASKS.md #9; standard, testable, well-understood |
-| Randomness | Seeded RNG only, sourced from planet DNA | CLAUDE.md determinism requirement; never `UnityEngine.Random` in generation |
-| Configuration | ScriptableObjects (`PlanetSettings`) | CLAUDE.md data-driven requirement; avoids scattered constants |
-| Planet component split | `Planet` (data) / `PlanetGenerator` / `PlanetManager` separate classes | CLAUDE.md single-responsibility + composition-over-inheritance rules |
-| Persistence | Store seed + edits only; regenerate the rest | SCOPE.md "Saving" section — never serialize reconstructable terrain |
-| Collision | `PolygonCollider2D` derived from mesh/chunk data | 2D project; matches TASKS.md #10 |
-| Assembly structure | Dedicated `.asmdef` for Runtime code, separate for Tests | CLAUDE.md Task 1.1 ("Create assembly definitions"); keeps compile times low and enforces the layering above |
-| Seam handling | No seam logic needed: shared lattice points | Adjacent square chunks sample the same global Cartesian lattice. Shared boundary lattice points produce identical terrain values by construction (same field, same position), so Marching Squares generates contiguous mesh edges automatically. |
-| Edit sampling | Chunk-indexed spatial index | `EnableChunkIndexing()` maps each edit to chunks whose bounding box overlaps the brush footprint. `CartesianChunkFieldSampler` calls `Sample(position, chunkIndex)` to scan only local edits — O(chunk_local_edits) instead of O(total_lifetime_edits). `PruneDeadEdits()` reclaims zero-radius entries. CSG Max/Min commutativity guarantees excluding distant edits produces identical results. |
-
----
-
-## 6. Public API Surface (planned, Phase 1 scope)
-
-- `Planet` — `Radius`, `Seed`, `GravityStrength`, `Settings` (read-only accessors; construction/validation via constructor or `Initialize`).
-- `PlanetManager` — `Register(Planet)`, `Unregister(Planet)`, `GetPlanetAt(Vector2 worldPos)`, `AllPlanets` (read-only enumerable).
-- `PlanetCoordinates` — `WorldToLocal`, `LocalToRadial`, `RadialToLocal`, `SurfaceNormal(angle)`.
-
-Terrain/meshing/collision APIs are deferred to Phase 2 design and not finalized here.
+| Terrain | Continuous SDF (CPU) | Smooth deformation, marching squares |
+| Chunks | Square Cartesian grid | Simple indexing, 4 neighbors, no seams |
+| Meshing | Marching Squares (2D) | Standard, testable, well-understood |
+| Randomness | SeededRandom (xorshift32) | Determinism — never `UnityEngine.Random` |
+| Config | ScriptableObjects | Data-driven, no scattered constants |
+| Persistence | Seed + edits only | Regenerate everything else |
+| Collision | `PolygonCollider2D` from mesh data | 2D project, derives from SDF |
+| Brush edits | Pure SDF cone (radius only) | Exact circles, idempotent CSG |
+| Edit indexing | Packed (col,row) → List<int> | Edits indexed even when no chunk exists |
+| Empty chunks | Auto-removed | No wasted GameObjects/meshes |
 
 ---
 
 ## 7. Key Assumptions
 
-1. **Unity Version** — 6000.0.45f1 (Unity 6), URP 2D, as found in `ProjectSettings/ProjectVersion.txt`.
-2. **2D only** — planets are circles, not spheres; "radial" means 2D polar coordinates throughout.
-3. **No git repository detected** in this working directory context — version control status should be confirmed with the user before work that benefits from commits/branches.
-4. **Single assembly initially** — one `SDF_Terrain.Runtime` asmdef plus one `SDF_Terrain.Tests` asmdef is sufficient for Phase 1; further splitting (e.g. per-module asmdefs) is deferred until a concrete compile-time or dependency-boundary problem appears.
-5. **CPU-first terrain** — the SDF and meshing start as plain C# (NativeArray-ready but not Burst/Jobs yet), per CLAUDE.md "Future Compatibility" (design for later migration, don't front-load it).
-6. **No existing code to reuse** — confirmed empty directory; Phase 1 Task 1 (project structure) is genuinely the first actionable task.
+1. **Unity 6 (6000.0.45f1)**, URP 2D.
+2. **2D only** — planets are circles. "Radial" = 2D polar coordinates.
+3. **Single assembly** — `SDF_Terrain.Runtime` asmdef + `SDF_Terrain.Tests` asmdef.
+4. **CPU-first** — plain C#, designed for later Jobs/Burst migration.
+5. **No stored geometry** — everything regenerates from seed + edits.
 
 ---
 
-## 8. Directory Structure (Planned)
+## 8. Risks
 
-```
-Assets/SDF_Terrain/
-├── CLAUDE.md
-├── SCOPE.md
-├── TASKS.md
-├── ARCHITECTURE.md
-│
-├── Runtime/
-│   ├── SDF_Terrain.Runtime.asmdef
-│   ├── Core/
-│   │   ├── PlanetCoordinates.cs
-│   │   ├── RadialMath.cs
-│   │   └── SeededRandom.cs
-│   ├── Planet/
-│   │   ├── Planet.cs
-│   │   ├── PlanetSettings.cs
-│   │   └── PlanetManager.cs
-│   ├── Terrain/          # Phase 2+
-│   └── Meshing/          # Phase 2+
-│
-├── Scripts/
-│   └── Debug/            # per-system debug visualizations, added incrementally
-│
-└── Tests/
-    ├── SDF_Terrain.Tests.asmdef
-    ├── EditMode/
-    │   ├── PlanetCoordinatesTests.cs
-    │   ├── PlanetTests.cs
-    │   └── PlanetManagerTests.cs
-    └── PlayMode/
-```
-
----
-
-## 9. Risks and Mitigations
-
-| Risk | Impact | Mitigation |
+| Risk | Status | Mitigation |
 |------|--------|------------|
-| No git repository | No version control, work loss risk | Confirm with user before beginning implementation; recommend init if absent |
-| Chunk shape (angular vs. Cartesian) not yet validated against meshing algorithm | Rework needed once Marching Squares (Task 9) lands | Keep chunk indexing behind an interface; defer final shape decision to Task 6 design step, informed by Task 9 |
-| Visible seam gaps at chunk boundaries | Mesh contour vertices placed at different positions on shared cell edges | **Resolved** (Task 15.10): Square Cartesian chunks share boundary lattice points that sample the same field at the same position. Identical terrain values guarantee identical Marching Squares output at every seam — no runtime seam logic needed. |
-| Determinism regressions from incidental `UnityEngine.Random` use | Non-reproducible planets | Enforce via code review / analyzer; seeded RNG is the only entry point exposed to generation code |
-| Overlap with sibling `EuroAtmoClaude` module (atmosphere) | Duplicate coordinate/math utilities | `PlanetCoordinates`/radial math here should be reused by atmosphere module later rather than reimplemented; flag if duplication appears |
-| Task 1 (assembly definitions, analyzers) has no prior art in this folder | Ambiguity on analyzer ruleset | Mirror whatever ruleset (if any) `EuroAtmoClaude` or project root uses; otherwise use Unity defaults and note the gap |
-
----
-
-## 10. Dependencies
-
-No new package dependencies required for Phase 1–2. Uses only:
-
-- Unity 2D packages (already installed)
-- Unity Test Framework (already installed)
-- Unity ScriptableObjects, MonoBehaviours (built-in)
-- `PolygonCollider2D` / Physics2D module (already installed, needed from Task 10 onward)
+| Seam gaps at chunk boundaries | **Resolved** (15.10) | Square chunks share lattice points |
+| Brush melting / non-idempotent edits | **Resolved** (15.5) | CSG Max/Min composition |
+| Performance degradation over time | **Resolved** (15.11) | Chunk-indexed sampling + pruning |
+| Determinism regressions | Active risk | Code review; SeededRandom is only source |
+| Overlap with EuroAtmoClaude module | Monitoring | Reuse `PlanetCoordinates`/radial math where possible |
