@@ -39,5 +39,48 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(position, edit.LocalPosition);
             Assert.AreEqual(2f, edit.Radius);
         }
+
+        [Test]
+        public void ToEdit_Smooth_ThrowsInvalidOperationException()
+        {
+            var brush = new TerrainBrush(BrushMode.Smooth, radius: 3f);
+            var position = new Vector2(5f, 0f);
+
+            Assert.Throws<InvalidOperationException>(() => brush.ToEdit(position));
+        }
+
+        [Test]
+        public void Constructor_SmoothMode_Accepts()
+        {
+            // Smooth is a valid mode that should construct without error.
+            var brush = new TerrainBrush(BrushMode.Smooth, radius: 2f);
+            Assert.AreEqual(BrushMode.Smooth, brush.Mode);
+            Assert.AreEqual(2f, brush.Radius);
+        }
+
+        [Test]
+        public void Constructor_ElectricMode_Accepts()
+        {
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 3f);
+            Assert.AreEqual(BrushMode.Electric, brush.Mode);
+            Assert.AreEqual(3f, brush.Radius);
+        }
+
+        [Test]
+        public void ToEdit_Electric_ProducesAdditiveEdit()
+        {
+            // Electric mode should produce an additive (dig) edit, same as Remove.
+            // Note: ChunkTerrainRenderer constructs TerrainEdit directly for Electric mode
+            // (to use the strike radius), but ToEdit still supports Electric for callers
+            // that need the standard conversion.
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 2f);
+            var position = new Vector2(5f, 0f);
+
+            TerrainEdit edit = brush.ToEdit(position);
+
+            Assert.IsTrue(edit.IsAdditive);
+            Assert.AreEqual(position, edit.LocalPosition);
+            Assert.AreEqual(2f, edit.Radius);
+        }
     }
 }

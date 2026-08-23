@@ -26,9 +26,16 @@ namespace SDFTerrain.Terrain
         }
 
         /// <summary>Builds the persisted edit this brush stroke produces at the given planet-local position.</summary>
+        /// <remarks>Throws for <see cref="BrushMode.Smooth"/> — smooth operates via <see cref="TerrainField.SmoothEdits"/>, not <see cref="TerrainEdit"/>.</remarks>
         public TerrainEdit ToEdit(Vector2 localPosition)
         {
-            bool isAdditive = Mode == BrushMode.Remove;
+            if (Mode == BrushMode.Smooth)
+            {
+                throw new InvalidOperationException("Smooth mode does not produce a TerrainEdit; use TerrainField.SmoothEdits instead.");
+            }
+
+            // Remove and Electric both carve terrain (additive = dig).
+            bool isAdditive = Mode == BrushMode.Remove || Mode == BrushMode.Electric;
             return new TerrainEdit(localPosition, Radius, isAdditive);
         }
     }

@@ -5,5 +5,11 @@ namespace SDFTerrain.Terrain
     {
         Add,
         Remove,
+        Smooth,
+        /// <summary>
+        /// Finds the nearest terrain surface within the brush radius and carves a circular
+        /// edit at that location, as if a lightning bolt struck the closest point.
+        /// </summary>
+        Electric,
     }
 }

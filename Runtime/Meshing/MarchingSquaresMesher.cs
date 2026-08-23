@@ -250,5 +250,41 @@ namespace SDFTerrain.Meshing
             meshData.AddTriangle(a, d, e, uvScale);
             meshData.AddTriangle(a, e, f, uvScale);
         }
+
+        /// <summary>
+        /// Computes the total solid area of the mesh using the shoelace formula over the triangle
+        /// list. All vertices lie in the XY plane (Z=0), so the 3D cross product reduces to a 2D
+        /// operation. Because MarchingSquaresMesher produces non-overlapping triangles that tile
+        /// the solid region exactly, the sum of triangle areas equals the solid area. Returns 0
+        /// for an empty mesh (no triangles).
+        /// </summary>
+        public static float ComputeSolidArea(MeshData meshData)
+        {
+            if (meshData == null)
+            {
+                throw new ArgumentNullException(nameof(meshData));
+            }
+
+            if (meshData.Triangles.Count == 0)
+            {
+                return 0f;
+            }
+
+            float totalArea = 0f;
+            var vertices = meshData.Vertices;
+            var triangles = meshData.Triangles;
+
+            for (int i = 0; i < triangles.Count; i += 3)
+            {
+                Vector3 a = vertices[triangles[i]];
+                Vector3 b = vertices[triangles[i + 1]];
+                Vector3 c = vertices[triangles[i + 2]];
+
+                // Shoelace formula for 2D triangle area.
+                totalArea += Mathf.Abs(a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y)) * 0.5f;
+            }
+
+            return totalArea;
+        }
     }
 }

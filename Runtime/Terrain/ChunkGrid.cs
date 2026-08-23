@@ -295,5 +295,26 @@ namespace SDFTerrain.Terrain
             long key = MakeKey(col, row);
             return _chunks.ContainsKey(key);
         }
+
+        /// <summary>
+        /// Returns true if a chunk with the given index exists and outputs it; otherwise returns
+        /// false. Non-throwing variant of <see cref="GetChunk"/> for callers that need to handle
+        /// missing chunks gracefully (e.g., after <see cref="RemoveChunkAtGrid"/> removes an empty
+        /// chunk).
+        /// </summary>
+        public bool TryGetChunk(int index, out TerrainChunk chunk)
+        {
+            foreach (TerrainChunk c in _chunks.Values)
+            {
+                if (c.Index == index)
+                {
+                    chunk = c;
+                    return true;
+                }
+            }
+
+            chunk = null;
+            return false;
+        }
     }
 }

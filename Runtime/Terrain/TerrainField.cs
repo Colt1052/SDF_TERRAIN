@@ -91,6 +91,80 @@ namespace SDFTerrain.Terrain
         }
 
         /// <summary>
+        /// Finds the nearest terrain surface point within <paramref name="radius"/> of
+        /// <paramref name="localPosition"/>. The surface is defined as the zero-crossing of the
+        /// SDF (where <see cref="Sample"/> returns zero).
+        /// Uses angular sampling around the query point to locate the closest surface, then
+        /// refines radially toward the exact zero-crossing.
+        /// </summary>
+        /// <param name="localPosition">Planet-local query position.</param>
+        /// <param name="radius">Maximum search distance.</param>
+        /// <param name="rayCount">Number of search rays cast around the query point. Higher = more
+        /// accurate surface detection, lower = faster but more random strike placement.</param>
+        /// <param name="nearestSurface">The nearest surface point found, or <c>localPosition</c> if
+        /// no surface is within <paramref name="radius"/>.</param>
+        /// <returns>True if a terrain surface was found within the search radius.</returns>
+        public bool FindNearestSurface(Vector2 localPosition, float radius, int rayCount, out Vector2 nearestSurface)
+        {
+            if (radius <= 0f)
+            {
+                nearestSurface = localPosition;
+                return false;
+            }
+
+            if (rayCount <= 0)
+            {
+                rayCount = 1;
+            }
+
+            Vector2 closestPoint = localPosition;
+            float closestSurfaceDistance = Mathf.Infinity;
+
+            // Randomize the starting rotation so repeated strikes don't follow a predictable pattern.
+            float randomOffset = UnityEngine.Random.Range(0f, Mathf.PI * 2f);
+            for (int i = 0; i < rayCount; i++)
+            {
+                float angle = randomOffset + (i / (float)rayCount) * Mathf.PI * 2f;
+                Vector2 direction = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+
+                // Step outward from the query point along this direction, looking for a sign change.
+                float stepSize = radius / 8f;
+                float lastSampled = Sample(localPosition);
+
+                for (float dist = stepSize; dist <= radius; dist += stepSize)
+                {
+                    Vector2 probe = localPosition + direction * dist;
+                    float currentSampled = Sample(probe);
+
+                    // Detect a sign change between the last two samples — surface lies between them.
+                    if ((lastSampled < 0f && currentSampled >= 0f) ||
+                        (lastSampled >= 0f && currentSampled < 0f))
+                    {
+                        // Linear interpolation to estimate the zero-crossing.
+                        float totalDelta = Mathf.Abs(currentSampled - lastSampled);
+                        float t = totalDelta > 0f ? Mathf.Abs(lastSampled) / totalDelta : 0.5f;
+                        Vector2 surfaceEstimate = Vector2.Lerp(localPosition + direction * (dist - stepSize), probe, t);
+
+                        float surfaceDist = Vector2.Distance(localPosition, surfaceEstimate);
+                        if (surfaceDist < closestSurfaceDistance)
+                        {
+                            closestSurfaceDistance = surfaceDist;
+                            closestPoint = surfaceEstimate;
+                        }
+                        // Found a surface crossing on this ray — no need to continue stepping.
+                        break;
+                    }
+
+                    lastSampled = currentSampled;
+                }
+            }
+
+            bool found = closestSurfaceDistance < radius && closestSurfaceDistance < Mathf.Infinity;
+            nearestSurface = found ? closestPoint : localPosition;
+            return found;
+        }
+
+        /// <summary>
         /// Signed distance at the given planet-local position: negative = solid, positive = air,
         /// zero = surface. This is the single source of truth for terrain shape.
         /// </summary>
@@ -158,6 +232,39 @@ namespace SDFTerrain.Terrain
             }
 
             return distance;
+        }
+
+        /// <summary>
+        /// Smooths the terrain by reducing the radius of existing edits near the given position.
+        /// Smoothing conceptually erases past edits rather than sculpting new terrain, so it
+        /// reduces edit.Radius (clamped to never go negative) using a smoothstep falloff profile.
+        /// An edit shrunk to Radius &lt;= 0 contributes nothing at sample time and can be reclaimed
+        /// by <see cref="PruneDeadEdits"/>.
+        /// </summary>
+        /// <param name="localPosition">Planet-local center of the smooth operation.</param>
+        /// <param name="radius">Affected area and the maximum reduction amount.</param>
+        public void SmoothEdits(Vector2 localPosition, float radius)
+        {
+            if (radius <= 0f)
+            {
+                return;
+            }
+
+            for (int i = 0; i < _edits.Count; i++)
+            {
+                TerrainEdit edit = _edits[i];
+
+                float distanceFromBrush = Vector2.Distance(localPosition, edit.LocalPosition);
+                if (distanceFromBrush >= radius)
+                {
+                    continue;
+                }
+
+                float falloff = 1f - Mathf.SmoothStep(0f, radius, distanceFromBrush);
+                // Reduce the edit's radius toward zero.
+                edit.Radius = Mathf.Max(0f, edit.Radius - falloff * radius);
+                _edits[i] = edit;
+            }
         }
 
         /// <summary>Applies and persists a modification. Never mutates a mesh or collider directly.</summary>

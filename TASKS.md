@@ -1019,6 +1019,229 @@ in-editor is the outstanding acceptance check.
 
 ---
 
+## 15.12. Prevent chunk creation for delete brushes in empty space ✅ DONE
+
+Follow-up to Tasks 6/15 (Chunk system / Chunk rebuilding), raised by in-editor
+observation: delete brushes in empty space far from the planet created new
+chunks (with GameObjects, MeshFilters, MeshRenderers, PolygonCollider2Ds) even
+though there was no terrain to delete.
+
+Acceptance:
+
+* A delete brush outside the existing chunk grid does not create new chunks.
+* A build brush outside the grid still creates chunks (for building new
+  terrain).
+* A delete brush overlapping existing chunks still marks them dirty and
+  rebuilds them.
+* Chunk-indexed sampling remains correct after edits outside the grid (a
+  future build at the same location sees prior delete edits).
+
+Files modified (3 production + 3 test files):
+
+* `ChunkGrid.cs` — `ChunksInRect` gained `bool createChunks = true` parameter.
+  When `false`, returns only existing chunks (skips `GetOrCreateChunkAtGrid`,
+  uses `TryGetValue` instead). Default `true` preserves existing behavior for
+  all other callers.
+* `TerrainField.cs` — `_editsByChunk` (keyed by `chunk.Index` `int`) replaced
+  with `_editsByChunkKey` (keyed by packed `(col, row)` `long`). `IndexEdit`
+  no longer calls `ChunksInRect`; it computes the col/row range directly
+  (deriving `gridMinX`/`gridMinY` from `_chunkGrid.Cols`/`_chunkGrid.Rows`/
+  `_chunkGrid.ChunkSize`, matching the ChunkGrid constructor logic) and
+  indexes edits by packed key. This lets edits be indexed for grid cells even
+  when no chunk object exists, so a delete brush outside the grid still
+  registers its edit: a future build that creates a chunk there will see the
+  delete in its chunk-indexed sample. `Sample(Vector2, int)` converts
+  `chunkIndex` to `(col, row)` via `GetChunk(chunkIndex)`, then to packed key
+  for lookup.
+* `ChunkTerrainRenderer.cs` — `ApplyBrush` passes
+  `createChunks = brush.Mode == BrushMode.Add` to `MarkDirtyRect`, which
+  forwards it to `ChunksInRect`. Build brushes expand; delete brushes don't.
+  `MarkDirtyRect` signature gained `bool createChunks` parameter.
+
+Key design decisions:
+
+1. **Packed-key indexing over chunk-index indexing**: The old `Dictionary<int,
+   List<int>>` was keyed by `chunk.Index` (a sequential int), which requires a
+   chunk object to exist. Switching to `Dictionary<long, List<int>>` keyed by
+   packed `(col, row)` means edits can be indexed for any grid cell regardless
+   of whether a chunk exists — no reconciliation needed when a chunk is later
+   created.
+2. **IndexEdit computes grid range directly**: Instead of calling
+   `ChunksInRect` (which couples edit indexing to chunk creation), `IndexEdit`
+   iterates the col/row range itself. This is the same computation
+   `ChunksInRect` performs, just without the chunk-creation side effect.
+3. **ApplyEdit signature unchanged**: The `createChunks` control lives only in
+   `ChunkTerrainRenderer.ApplyBrush` → `MarkDirtyRect` → `ChunksInRect`. The
+   field's `ApplyEdit` always indexes edits (by packed key) regardless of
+   whether chunks exist — the field shouldn't know about rendering policy.
+
+Tests: Added `ChunksInRect_OutOfBounds_NoCreate_ReturnsEmpty`,
+`ChunksInRect_PartialOutOfBounds_NoCreate_ReturnsExistingOnly` to
+`ChunkGridTests`; `ApplyBrush_Remove_OutsideOriginalGrid_NoChunksCreated` and
+`ApplyBrush_RemoveThenAdd_OutsideOriginalGrid_RenderCorrectly` to
+`ChunkTerrainRendererTests`; `ChunkIndexedSample_EditOutsideGrid_IndexedByPackedKey`
+to `TerrainFieldTests`. Verified structurally only — no Unity CLI available
+here.
+
+---
+
+## 15.13. Automatic removal of empty chunks ✅ DONE
+
+Follow-up to Task 15.12 (prevent chunk creation for delete brushes): after
+preventing new chunks from being created in empty space, there was still the
+question of removing chunks that had become empty (e.g., built terrain that was
+later fully deleted).
+
+Acceptance:
+
+* A chunk whose mesh produces no geometry is removed: GameObject destroyed,
+  entry removed from `_chunkViews`, chunk removed from `ChunkGrid`.
+* Re-building terrain at the same location recreates the chunk correctly.
+* Chunks with terrain (planet surface) are not removed.
+* Removal does not invalidate the `DirtyChunks()` enumerator.
+
+Files modified (2 production + 2 test files):
+
+* `ChunkGrid.cs` — Added `RemoveChunkAtGrid(col, row)` (removes chunk from
+  dictionary, returns whether one existed) and `HasChunkAtGrid(col, row)`
+  (existence check).
+* `ChunkTerrainRenderer.cs` — `RebuildChunk` now returns `bool` indicating
+  whether the chunk produced no geometry (`meshData.Vertices.Count == 0`).
+  `RebuildDirtyChunks` collects empty chunk indices during the rebuild loop
+  and removes them after (avoiding enumerator invalidation from modifying the
+  grid mid-iteration). `RemoveEmptyChunk(chunkIndex)` destroys the GameObject,
+  removes the entry from `_chunkViews`, and calls `RemoveChunkAtGrid` on the
+  grid. Empty chunks skip mesh/collider assignment (no point building a Unity
+  Mesh for nothing).
+
+Key design decisions:
+
+1. **Global behavior**: Any empty chunk is removed, not just dynamically
+   created ones. No tracking of "original" vs "dynamic" chunks. If all
+   terrain in a chunk is erased, it disappears.
+2. **Collect-then-remove pattern**: Empty chunk indices are collected during
+   the `DirtyChunks()` iteration and removed after, to avoid invalidating the
+   `foreach` enumerator (which iterates `_chunks.Values`).
+3. **No orphaned edit index cleanup**: When a chunk is removed, the
+   corresponding `_editsByChunkKey` entry for its packed key is left in place
+   (orphaned but harmless — small dictionary entries that don't affect
+   correctness). Future edits to the same cell will find and reuse the entry.
+
+Tests: Added `RemoveChunkAtGrid_RemovesExistingChunk`,
+`RemoveChunkAtGrid_MissingChunk_ReturnsFalse`, `HasChunkAtGrid_ExistingChunk_ReturnsTrue`,
+`HasChunkAtGrid_MissingChunk_ReturnsFalse`, `HasChunkAtGrid_AfterRemoval_ReturnsFalse`
+to `ChunkGridTests`; `ApplyBrush_BuildThenRemove_OutsideOriginalGrid_RemovesChunk`,
+`ApplyBrush_EmptyChunk_RecreatedOnBuild`,
+`RebuildDirtyChunks_PlanetChunksNotRemoved` to
+`ChunkTerrainRendererTests`. Verified structurally only — no Unity CLI
+available here.
+
+---
+
+## 15.14. In-Game Brush Selection & Property Editor ✅ DONE
+
+Follow-up to Tasks 12/15 (Brush framework / Chunk rebuilding), raised by the need
+for a data-driven, extensible brush UI — the previous `MouseTerrainEditor` was a
+hardcoded demo driver with no brush switching, parameter tuning, or UI.
+
+Acceptance:
+
+* Brush styles are defined by ScriptableObject assets (`BrushDefinition`).
+* Each brush exposes configurable parameters (`BrushParameterDescriptor`).
+* Brush behavior logic is abstract (`BrushBehavior`) and extensible without
+  modifying core terrain code.
+* In-game UI displays brush selectors and parameter sliders dynamically.
+* Switching brushes rebuilds the parameter panel.
+* Adjusting sliders updates the controller in real time.
+
+Files created (6):
+
+* `BrushBehavior.cs` (`Runtime/Terrain/Brush/`) — Abstract `ScriptableObject` base
+  class with `Apply(TerrainField, ChunkTerrainRenderer, Vector2,
+  Dictionary<string, float>)`. Inherits `ScriptableObject` so instances can be
+  serialized as Unity assets and referenced from `BrushDefinition`.
+* `BrushDefinition.cs` (`Runtime/Terrain/Brush/`) — ScriptableObject that holds a
+  brush name, icon, description, a `BrushBehavior` reference, and an array of
+  `BrushParameterDescriptor`. The single asset a user drags into the controller to
+  define a brush style.
+* `BrushParameterDescriptor.cs` (`Runtime/Terrain/Brush/`) — ScriptableObject that
+  describes a single float parameter: name, display name, tooltip, default value,
+  min/max range, and step size. Shared across brush definitions (e.g., "radius"
+  descriptor used by Erase, Build, and Smooth).
+* `StandardBrushBehavior.cs` (`Runtime/Terrain/Brush/`) — `BrushBehavior`
+  implementation for Add/Remove operations. Reads `BrushMode` field, creates a
+  `TerrainEdit`, applies it to the field, and marks chunks dirty via
+  `ChunkTerrainRenderer.ApplyBrush`. Respects `createChunks` flag (only Add mode
+  creates chunks in empty space).
+* `SmoothBrushBehavior.cs` (`Runtime/Terrain/Brush/`) — `BrushBehavior`
+  implementation for smoothing. Calls `TerrainField.SmoothEdits` and marks chunks
+  dirty via `ChunkTerrainRenderer.MarkDirtyRectAndRebuild` (does not add terrain
+  edits, so uses the direct renderer path).
+* `BrushController.cs` (`Runtime/Terrain/Brush/`) — `MonoBehaviour` that manages
+  brush state: active definition, parameter dictionary, and application logic.
+  Fires events (`OnBrushChanged`, `OnParameterChanged`, `OnBrushApplied`) for UI
+  binding. Validates parameters against descriptor ranges.
+
+Files created (input + UI):
+
+* `BrushInputHandler.cs` (`Runtime/Terrain/`) — Thin input layer that replaces
+  `MouseTerrainEditor` as the demo driver. Reads mouse input, converts
+  screen→world→planet-local, calls `controller.ApplyBrush(localPosition)`. Left
+  mouse button (button 0) applies the brush.
+* `BrushUI.cs` (`Runtime/UI/`) — Canvas-based in-game UI component. Dynamically
+  builds style selector buttons (one per `BrushDefinition`) and parameter sliders
+  (one per `BrushParameterDescriptor` of the active brush). Subscribes to
+  `BrushController` events to rebuild the parameter panel on brush change and
+  update slider values on programmatic parameter changes. Supports optional
+  prefab templates for buttons and sliders. Properly cleans up UI elements on
+  destroy (handles both play-mode `Destroy` and editor-mode `DestroyImmediate`).
+
+Files created (editor):
+
+* `BrushDefaultAssetsCreator.cs` (`Editor/`) — Editor menu item
+  `Tools/SDF Terrain/Create Default Brush Assets` that generates the default brush
+  ScriptableObject assets: Erase (Remove), Build (Add), and Smooth behaviors with
+  a shared radius parameter descriptor. Uses reflection to set private
+  `[SerializeField]` fields on ScriptableObjects. Assets are created under
+  `Assets/SDF_Terrain/Resources/Brushes/`.
+
+Files modified (2):
+
+* `ChunkTerrainRenderer.cs` — Added public `MarkDirtyRectAndRebuild(minX, maxX,
+  minY, maxY, createChunks)` method that wraps `MarkDirtyRect` and
+  `RebuildDirtyChunks`. Enables `BrushBehavior` implementations to mark chunks
+  dirty and rebuild without going through `ApplyBrush` (which would add an
+  unwanted `TerrainEdit` — needed by `SmoothBrushBehavior`).
+* `SmoothBrushBehavior.cs` — Updated to call `renderer.MarkDirtyRectAndRebuild`
+  directly (previously had a workaround method on the same class that was
+  removed once the public renderer method was available).
+
+Key design decisions:
+
+1. **BrushBehavior as ScriptableObject**: Unity's serialization system requires
+   `ScriptableObject` or `MonoBehaviour` for `[SerializeField]` references. Plain
+   C# classes cannot be serialized. This means each brush behavior instance is a
+   Unity asset that can be drag-referenced into `BrushDefinition` definitions.
+2. **Parameter descriptors as ScriptableObjects**: Parameters are defined as
+   assets, not code. New parameters can be added by creating new descriptor
+   assets — no code changes required.
+3. **Event-driven UI**: `BrushController` fires events; `BrushUI` subscribes. The
+   UI layer knows nothing about terrain, meshes, or chunks — it only knows about
+   brush definitions and parameter values.
+4. **Thin input layer**: `BrushInputHandler` is a pure input-to-controller adapter.
+   No gameplay logic, no terrain knowledge — just screen→world→planet-local
+   coordinate conversion and mouse button detection.
+5. **MarkDirtyRectAndRebuild on renderer**: Exposing this public method on
+   `ChunkTerrainRenderer` is the minimal surface area needed for non-standard
+   behaviors (Smooth) that modify the field but don't add terrain edits.
+
+Verified structurally only — no Unity CLI available here. The outstanding
+verification steps are: (1) run the editor menu item to generate assets,
+(2) attach `BrushController` + `BrushInputHandler` + `BrushUI` to a scene,
+(3) verify brush switching, parameter adjustment, and painting in-game.
+
+---
+
 ## 16. Undo system
 
 Store:

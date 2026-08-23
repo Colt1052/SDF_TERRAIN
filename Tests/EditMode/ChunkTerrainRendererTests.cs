@@ -392,6 +392,169 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(initialCount, grid.ChunkCount);
         }
 
+        [Test]
+        public void ApplyBrush_Smooth_DoesNotAddEdits()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            // Add an edit first so there's something to smooth.
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 3f, isAdditive: true));
+
+            var brush = new TerrainBrush(BrushMode.Smooth, radius: 2f);
+            renderer.ApplyBrush(brush, new Vector2(10f, 0f));
+
+            // Smooth should not add a new edit; it modifies existing edits in-place.
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void ApplyBrush_Smooth_ReducesNearbyEditRadius()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            float originalRadius = 5f;
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: originalRadius, isAdditive: true));
+
+            var brush = new TerrainBrush(BrushMode.Smooth, radius: 2f);
+            renderer.ApplyBrush(brush, new Vector2(10f, 0f));
+
+            // The edit's radius should be smaller after smoothing at its center.
+            Assert.Less(field.Edits[0].Radius, originalRadius);
+        }
+
+        [Test]
+        public void ApplyBrush_Smooth_OutsideOriginalGrid_NoChunksCreated()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            int initialChunkCount = grid.ChunkCount;
+
+            Vector2 farPosition = new Vector2(50f, 50f);
+            var brush = new TerrainBrush(BrushMode.Smooth, radius: 3f);
+            renderer.ApplyBrush(brush, farPosition);
+
+            // Smooth should not create new chunks in empty space.
+            Assert.AreEqual(initialChunkCount, grid.ChunkCount);
+        }
+
+        [Test]
+        public void ApplyBrush_Electric_NearSurface_PersistsAdditiveEdit()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            // Brush near the planet surface (radius 10), from outside.
+            // Search radius = 5f (how far to look for surface), strike radius = 2f (crater size).
+            Vector2 position = new Vector2(14f, 0f);
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 5f);
+            renderer.ApplyBrush(brush, position, strikeRadius: 2f);
+
+            Assert.AreEqual(1, field.Edits.Count);
+            // Electric produces a dig (additive) edit.
+            Assert.IsTrue(field.Edits[0].IsAdditive);
+            // The edit should be near the surface, not at the click position.
+            Assert.Greater(field.Edits[0].LocalPosition.magnitude, 8f);
+            Assert.Less(field.Edits[0].LocalPosition.magnitude, 12f);
+            // The edit radius should be the strike radius, not the search radius.
+            Assert.AreEqual(2f, field.Edits[0].Radius);
+        }
+
+        [Test]
+        public void ApplyBrush_Electric_FarFromSurface_NoEdit()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            // Brush far from the planet with a small search radius that can't reach the surface.
+            Vector2 farPosition = new Vector2(50f, 50f);
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 3f);
+            renderer.ApplyBrush(brush, farPosition, strikeRadius: 2f);
+
+            // No surface within search radius — no edit should be created.
+            Assert.AreEqual(0, field.Edits.Count);
+        }
+
+        [Test]
+        public void ApplyBrush_Electric_OutsideOriginalGrid_NoChunksCreated()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            int initialChunkCount = grid.ChunkCount;
+
+            Vector2 farPosition = new Vector2(50f, 50f);
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 3f);
+            renderer.ApplyBrush(brush, farPosition, strikeRadius: 2f);
+
+            // Electric should not create new chunks (it only carves existing terrain).
+            Assert.AreEqual(initialChunkCount, grid.ChunkCount);
+        }
+
+        [Test]
+        public void ApplyBrush_Electric_EditPlacedNearSurface()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            // Brush from just outside the planet surface.
+            Vector2 position = new Vector2(12f, 0f);
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 5f);
+            renderer.ApplyBrush(brush, position, strikeRadius: 3f);
+
+            Assert.AreEqual(1, field.Edits.Count);
+            // The edit position should be near the surface (radius ~10), not at the click point.
+            Vector2 editPos = field.Edits[0].LocalPosition;
+            Assert.AreEqual(10f, editPos.magnitude, 1.5f);
+            // The edit radius should be the strike radius.
+            Assert.AreEqual(3f, field.Edits[0].Radius);
+        }
+
+        [Test]
+        public void ApplyBrush_Electric_StrikeRadiusIndependentOfSearchRadius()
+        {
+            var renderer = _gameObject.AddComponent<ChunkTerrainRenderer>();
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            renderer.Initialize(field, grid, maxRadius: 15f);
+            renderer.RebuildDirtyChunks();
+
+            // Large search radius (8f) to find the surface, small strike radius (0.5f) for a tiny crater.
+            Vector2 position = new Vector2(15f, 0f);
+            var brush = new TerrainBrush(BrushMode.Electric, radius: 8f);
+            renderer.ApplyBrush(brush, position, strikeRadius: 0.5f);
+
+            Assert.AreEqual(1, field.Edits.Count);
+            // The edit radius should be the small strike radius, not the large search radius.
+            Assert.AreEqual(0.5f, field.Edits[0].Radius);
+            // The edit should be near the surface.
+            Vector2 editPos = field.Edits[0].LocalPosition;
+            Assert.AreEqual(10f, editPos.magnitude, 1.5f);
+        }
+
         Mesh GetChunkMesh(ChunkTerrainRenderer renderer, TerrainChunk chunk)
         {
             foreach (Transform child in renderer.transform)

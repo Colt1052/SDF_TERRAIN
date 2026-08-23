@@ -33,6 +33,9 @@ namespace SDFTerrain.Terrain
 
         private TerrainField _field;
         private ChunkGrid _chunkGrid;
+
+        /// <summary>The terrain field this renderer was initialized with. Null before Initialize.</summary>
+        public TerrainField Field => _field;
         private readonly Dictionary<int, ChunkView> _chunkViews = new Dictionary<int, ChunkView>();
         private readonly List<int> _rectBuffer = new List<int>();
 
@@ -43,6 +46,7 @@ namespace SDFTerrain.Terrain
             public MeshRenderer MeshRenderer;
             public PolygonCollider2D Collider;
             public Mesh Mesh;
+            public float SolidArea;
         }
 
         /// <summary>
@@ -119,32 +123,168 @@ namespace SDFTerrain.Terrain
         /// <summary>
         /// Applies a brush stroke to the field this renderer was initialized with: persists the
         /// resulting edit, marks every chunk the stroke's footprint overlaps dirty (creating new
-        /// chunks only for build brushes; delete brushes don't expand into empty space), and
+        /// chunks only for build brushes; delete/smooth brushes don't expand into empty space), and
         /// rebuilds them. Per CLAUDE.md's "SDF is the source of truth" rule, the brush never
         /// touches a mesh/collider directly — it mutates the field and triggers a derive of only
         /// the affected chunks.
         /// </summary>
-        public void ApplyBrush(TerrainBrush brush, Vector2 localPosition)
+        /// <returns>
+        /// A <see cref="BrushAreaDelta"/> describing the solid area change. AreaRemoved > 0 means
+        /// terrain was carved (resource reward). AreaAdded > 0 means terrain was built (resource
+        /// cost). WasApplied is false if the brush was a no-op (e.g., Electric found no surface).
+        /// </returns>
+        public BrushAreaDelta ApplyBrush(TerrainBrush brush, Vector2 localPosition)
+        {
+            return ApplyBrush(brush, localPosition, strikeRadius: 1f, searchRayCount: 36);
+        }
+
+        /// <summary>
+        /// Overload of <see cref="ApplyBrush"/> that accepts parameters for <see cref="BrushMode.Electric"/>:
+        /// <paramref name="strikeRadius"/> controls crater size, <paramref name="searchRayCount"/> controls
+        /// how many rays are cast when searching for terrain.
+        /// </summary>
+        /// <returns>A <see cref="BrushAreaDelta"/> describing the solid area change.</returns>
+        public BrushAreaDelta ApplyBrush(TerrainBrush brush, Vector2 localPosition, float strikeRadius, int searchRayCount = 36)
         {
             if (_chunkViews.Count == 0)
             {
                 throw new InvalidOperationException("ApplyBrush requires Initialize to have been called first.");
             }
 
-            TerrainEdit edit = brush.ToEdit(localPosition);
-            _field.ApplyEdit(edit);
+            if (strikeRadius <= 0f)
+            {
+                strikeRadius = brush.Radius;
+            }
 
-            // Only build brushes create new chunks. Delete brushes should not expand the
-            // chunk grid into empty space — they only affect existing chunks.
-            bool createChunks = brush.Mode == BrushMode.Add;
+            // Measure total world area before the edit.
+            // Using total area (not per-chunk) guarantees correctness regardless of chunk
+            // creation (Add mode) or removal (empty chunks destroyed after Remove).
+            float solidAreaBefore = GetTotalSolidArea();
 
-            float minX = localPosition.x - brush.Radius;
-            float maxX = localPosition.x + brush.Radius;
-            float minY = localPosition.y - brush.Radius;
-            float maxY = localPosition.y + brush.Radius;
+            // Determine which chunks will be affected and their bounds rectangle.
+            // For Electric mode, pre-finds the strike point to know which chunks to mark dirty.
+            bool wasApplied = false;
+            GetBrushBounds(brush, localPosition, strikeRadius, searchRayCount,
+                out float brushMinX, out float brushMaxX, out float brushMinY, out float brushMaxY,
+                ref wasApplied);
 
+            // Apply the edit and mark chunks dirty.
+            ApplyEditAndMarkDirty(brush, localPosition, strikeRadius, searchRayCount,
+                brushMinX, brushMaxX, brushMinY, brushMaxY, ref wasApplied);
+
+            // Rebuild dirty chunks (fires TerrainChanged, sets ChunkView.SolidArea).
+            RebuildDirtyChunks();
+
+            // Measure total world area after the edit.
+            float solidAreaAfter = GetTotalSolidArea();
+
+            float delta = solidAreaBefore - solidAreaAfter;
+            if (delta > 0f)
+                return new BrushAreaDelta(areaRemoved: delta, areaAdded: 0f, wasApplied: wasApplied);
+            if (delta < 0f)
+                return new BrushAreaDelta(areaRemoved: 0f, areaAdded: -delta, wasApplied: wasApplied);
+            return new BrushAreaDelta(areaRemoved: 0f, areaAdded: 0f, wasApplied: wasApplied);
+        }
+
+        /// <summary>
+        /// Determines the bounding rectangle of the brush footprint so that
+        /// <see cref="MarkDirtyRect"/> knows which chunks to mark dirty.
+        /// For Electric mode, pre-finds the surface strike point.
+        /// </summary>
+        private void GetBrushBounds(TerrainBrush brush, Vector2 localPosition,
+            float strikeRadius, int searchRayCount,
+            out float minX, out float maxX, out float minY, out float maxY,
+            ref bool wasApplied)
+        {
+            if (brush.Mode == BrushMode.Electric)
+            {
+                if (_field.FindNearestSurface(localPosition, brush.Radius, searchRayCount, out Vector2 strikePoint))
+                {
+                    wasApplied = true;
+                    minX = strikePoint.x - strikeRadius;
+                    maxX = strikePoint.x + strikeRadius;
+                    minY = strikePoint.y - strikeRadius;
+                    maxY = strikePoint.y + strikeRadius;
+                }
+                else
+                {
+                    wasApplied = false;
+                    minX = maxX = localPosition.x;
+                    minY = maxY = localPosition.y;
+                }
+            }
+            else
+            {
+                wasApplied = true;
+                minX = localPosition.x - brush.Radius;
+                maxX = localPosition.x + brush.Radius;
+                minY = localPosition.y - brush.Radius;
+                maxY = localPosition.y + brush.Radius;
+            }
+        }
+
+        /// <summary>
+        /// Applies the brush edit to the field and marks affected chunks dirty.
+        /// Does NOT rebuild — caller is responsible for calling RebuildDirtyChunks.
+        /// </summary>
+        private void ApplyEditAndMarkDirty(TerrainBrush brush, Vector2 localPosition,
+            float strikeRadius, int searchRayCount,
+            float brushMinX, float brushMaxX, float brushMinY, float brushMaxY,
+            ref bool wasApplied)
+        {
+            switch (brush.Mode)
+            {
+                case BrushMode.Add:
+                    {
+                        TerrainEdit edit = brush.ToEdit(localPosition);
+                        _field.ApplyEdit(edit);
+                        MarkDirtyRect(brushMinX, brushMaxX, brushMinY, brushMaxY, createChunks: true);
+                        break;
+                    }
+                case BrushMode.Remove:
+                    {
+                        TerrainEdit edit = brush.ToEdit(localPosition);
+                        _field.ApplyEdit(edit);
+                        MarkDirtyRect(brushMinX, brushMaxX, brushMinY, brushMaxY, createChunks: false);
+                        break;
+                    }
+                case BrushMode.Smooth:
+                    {
+                        _field.SmoothEdits(localPosition, brush.Radius);
+                        MarkDirtyRect(brushMinX, brushMaxX, brushMinY, brushMaxY, createChunks: false);
+                        break;
+                    }
+                case BrushMode.Electric:
+                    {
+                        if (_field.FindNearestSurface(localPosition, brush.Radius, searchRayCount, out Vector2 strikePoint))
+                        {
+                            TerrainEdit edit = new TerrainEdit(strikePoint, strikeRadius, isAdditive: true);
+                            _field.ApplyEdit(edit);
+
+                            float strikeMinX = strikePoint.x - strikeRadius;
+                            float strikeMaxX = strikePoint.x + strikeRadius;
+                            float strikeMinY = strikePoint.y - strikeRadius;
+                            float strikeMaxY = strikePoint.y + strikeRadius;
+                            MarkDirtyRect(strikeMinX, strikeMaxX, strikeMinY, strikeMaxY, createChunks: false);
+                        }
+                        else
+                        {
+                            wasApplied = false;
+                        }
+                        break;
+                    }
+            }
+        }
+
+        /// <summary>
+        /// Marks every chunk whose bounding box overlaps the given rectangle dirty and rebuilds them.
+        /// Optionally creates new chunks if the rectangle extends beyond existing coverage.
+        /// Public so that custom <see cref="BrushBehavior"/> implementations (e.g. <see cref="Brush.SmoothBrushBehavior"/>)
+        /// can mark regions dirty and trigger a rebuild without adding a <see cref="TerrainEdit"/>.
+        /// </summary>
+        public void MarkDirtyRectAndRebuild(float minX, float maxX, float minY, float maxY, bool createChunks)
+        {
             MarkDirtyRect(minX, maxX, minY, maxY, createChunks);
-
             RebuildDirtyChunks();
         }
 
@@ -183,6 +323,7 @@ namespace SDFTerrain.Terrain
 
             if (!isEmpty)
             {
+                view.SolidArea = MarchingSquaresMesher.ComputeSolidArea(meshData);
                 view.Mesh = MeshDataConverter.ToUnityMesh(meshData, view.Mesh);
                 view.MeshFilter.sharedMesh = view.Mesh;
 
@@ -192,6 +333,10 @@ namespace SDFTerrain.Terrain
                 }
 
                 TerrainColliderBuilder.Apply(meshData, view.Collider);
+            }
+            else
+            {
+                view.SolidArea = 0f;
             }
 
             return isEmpty;
@@ -261,6 +406,20 @@ namespace SDFTerrain.Terrain
             // Remove from tracking structures.
             _chunkViews.Remove(chunkIndex);
             _chunkGrid.RemoveChunkAtGrid(chunk.Col, chunk.Row);
+        }
+
+        /// <summary>
+        /// Returns the total solid area across all active chunk meshes.
+        /// Useful for UI overlays that display world-state statistics.
+        /// </summary>
+        public float GetTotalSolidArea()
+        {
+            float total = 0f;
+            foreach (ChunkView view in _chunkViews.Values)
+            {
+                total += view.SolidArea;
+            }
+            return total;
         }
 
         private void OnDestroy()
