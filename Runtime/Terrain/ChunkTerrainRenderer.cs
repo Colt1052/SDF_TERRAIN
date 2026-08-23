@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using SDFTerrain.Meshing;
+using SDFTerrain.Materials;
 
 namespace SDFTerrain.Terrain
 {
@@ -20,6 +21,14 @@ namespace SDFTerrain.Terrain
         [SerializeField] private float cellSize = 0.5f;
         [SerializeField] private float uvScale = 0.1f;
         [SerializeField] private Material material;
+
+        /// <summary>
+        /// Optional geological profile for vertex-color rendering. When assigned, each vertex is
+        /// colored according to the material at that depth (dirt, stone, mantle, etc.). When null,
+        /// vertices are white and the material's shader tint provides all color.
+        /// </summary>
+        [Tooltip("When assigned, terrain vertices are colored by geological layer (dirt, stone, mantle, etc.)")]
+        [SerializeField] private GeologicalProfile geologicalProfile;
 
         public float CellSize => cellSize;
 
@@ -316,7 +325,26 @@ namespace SDFTerrain.Terrain
             }
 
             CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, cellSize);
-            MeshData meshData = MarchingSquaresMesher.Generate(sampled.Samples, sampled.Positions, uvScale);
+
+            // If a geological profile is assigned, sample per-grid-point colors for vertex-color rendering.
+            Color[,] vertexColors = null;
+            if (geologicalProfile != null)
+            {
+                int width = sampled.Samples.GetLength(0);
+                int height = sampled.Samples.GetLength(1);
+                vertexColors = new Color[width, height];
+
+                for (int x = 0; x < width; x++)
+                {
+                    for (int y = 0; y < height; y++)
+                    {
+                        string matId = GeologicalLayerGenerator.SampleId(_field, sampled.Positions[x, y], geologicalProfile);
+                        vertexColors[x, y] = MaterialColorMap.GetColor(matId);
+                    }
+                }
+            }
+
+            MeshData meshData = MarchingSquaresMesher.Generate(sampled.Samples, sampled.Positions, vertexColors, uvScale);
 
             // Check if the chunk is empty (no geometry produced).
             bool isEmpty = meshData.Vertices.Count == 0;

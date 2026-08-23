@@ -36,6 +36,12 @@ namespace SDFTerrain.Meshing
             mesh.SetTriangles(meshData.Triangles, 0);
             mesh.SetNormals(meshData.Normals);
             mesh.SetUVs(0, meshData.UVs);
+
+            if (meshData.Colors.Count == meshData.Vertices.Count)
+            {
+                mesh.SetColors(meshData.Colors);
+            }
+
             mesh.RecalculateBounds();
 
             return mesh;
