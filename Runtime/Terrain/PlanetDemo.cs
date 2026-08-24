@@ -24,9 +24,7 @@ namespace SDFTerrain.Terrain
         private void Start()
         {
             Planet.Planet planet = GetComponent<Planet.Planet>();
-            PlanetSettings effectiveSettings = settings ?? CreateDefaultSettings();
-            float gravity = effectiveSettings.GravityStrength;
-            planet.Initialize(effectiveSettings, seed, radius, gravity);
+            planet.Initialize(seed, radius);
 
             TerrainField field = PlanetGenerator.GenerateBaseShape(radius, planet.Seed);
             ChunkGrid chunkGrid = new ChunkGrid(radius, chunkSize);
@@ -38,11 +36,16 @@ namespace SDFTerrain.Terrain
             var profile = GeologicalProfile.EarthLike(seed, 0.3f);
             renderer.SetGeologicalProfile(profile);
 
-            // Material from shader — no .mat asset required
+            // Material from shader — create at runtime so no .mat asset is required.
+            // If the shader isn't found, leave the material as-is (Inspector-assigned).
             var shader = Shader.Find("SDFTerrain/VertexColor");
             if (shader != null)
             {
                 renderer.SetMaterial(new Material(shader));
+            }
+            else
+            {
+                Debug.LogErrorFormat("[PlanetDemo] Shader 'SDFTerrain/VertexColor' not found. Assign a material to ChunkTerrainRenderer manually, or check the shader compiles.");
             }
 
             // Zoom camera to see the whole planet
@@ -61,13 +64,6 @@ namespace SDFTerrain.Terrain
 
             renderer.TerrainChanged += sdfDebugView.NotifyTerrainChanged;
             renderer.TerrainChanged += gridDebugView.NotifyTerrainChanged;
-        }
-
-        private static PlanetSettings CreateDefaultSettings()
-        {
-            var settings = ScriptableObject.CreateInstance<PlanetSettings>();
-            settings.hideFlags = HideFlags.HideAndDontSave;
-            return settings;
         }
     }
 }

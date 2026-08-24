@@ -29,11 +29,6 @@ namespace SDFTerrain.Planet
         /// </summary>
         public void Initialize(PlanetSettings planetSettings, int seed, float radius, float gravityStrength)
         {
-            if (planetSettings == null)
-            {
-                throw new ArgumentNullException(nameof(planetSettings));
-            }
-
             if (radius <= 0f)
             {
                 throw new ArgumentOutOfRangeException(nameof(radius), radius, "Planet radius must be positive.");
@@ -45,10 +40,18 @@ namespace SDFTerrain.Planet
             }
 
             this.settings = planetSettings;
-            this.seed = planetSettings.HasSeedOverride ? planetSettings.SeedOverride : seed;
+            this.seed = planetSettings != null && planetSettings.HasSeedOverride ? planetSettings.SeedOverride : seed;
             this.radius = radius;
             this.gravityStrength = gravityStrength;
             _initialized = true;
+        }
+
+        /// <summary>
+        /// Overload for demos and runtime use cases that don't need a PlanetSettings asset.
+        /// </summary>
+        public void Initialize(int seed, float radius, float gravityStrength = 9.81f)
+        {
+            Initialize(null, seed, radius, gravityStrength);
         }
 
         public Vector2 Center => transform.position;
