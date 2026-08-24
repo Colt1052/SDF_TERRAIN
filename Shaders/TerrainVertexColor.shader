@@ -20,19 +20,22 @@ Shader "SDFTerrain/VertexColor"
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            #pragma multi_compile_instancing
+            #pragma multi_compile _ DUMMY_INSTANCING_ON
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             struct Attributes
             {
                 float4 positionOS : POSITION;
                 float3 color : COLOR;
-                float2 uv : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
                 float3 color : COLOR;
+                UNITY_VERTEX_OUTPUT_STEREO
             };
 
             CBUFFER_START(UnityPerMaterial)
@@ -42,8 +45,10 @@ Shader "SDFTerrain/VertexColor"
             Varyings vert(Attributes input)
             {
                 Varyings output;
-                VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionOS.xyz);
-                output.positionCS = vertexInput.positionCS;
+                UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+
+                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
                 output.color = input.color * _TintColor.rgb;
                 return output;
             }
