@@ -57,14 +57,12 @@ namespace SDFTerrain.Materials
             TerrainField field,
             Vector2 localPosition,
             GeologicalProfile profile,
-            MaterialDatabase database)
+            MaterialDatabase database = null)
         {
             if (field == null)
                 throw new System.ArgumentNullException(nameof(field));
             if (profile == null)
                 throw new System.ArgumentNullException(nameof(profile));
-            if (database == null)
-                throw new System.ArgumentNullException(nameof(database));
 
             float sdf = field.Sample(localPosition);
 

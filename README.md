@@ -2,7 +2,7 @@
 
 Simulation-driven terrain system for Unity that represents planets as continuous Signed Distance Fields. Every planet is a circle whose terrain, caves, materials, and geology derive from a deterministic seed.
 
-**Current State:** Phase 1-3 complete (foundation, terrain, editing). Phase 4 partially complete (materials database + sampling). Next: geological layers (Task 19).
+**Current State:** Phase 1-4 complete (foundation, terrain, editing, materials + geological layers). Geological layers are visible via vertex-color rendering. Next: ore generation (Task 20).
 
 ---
 

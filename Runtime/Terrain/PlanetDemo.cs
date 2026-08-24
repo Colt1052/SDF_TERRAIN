@@ -1,4 +1,5 @@
 using UnityEngine;
+using SDFTerrain.Materials;
 using SDFTerrain.Planet;
 
 namespace SDFTerrain.Terrain
@@ -23,13 +24,34 @@ namespace SDFTerrain.Terrain
         private void Start()
         {
             Planet.Planet planet = GetComponent<Planet.Planet>();
-            planet.Initialize(settings, seed, radius, settings.GravityStrength);
+            PlanetSettings effectiveSettings = settings ?? CreateDefaultSettings();
+            float gravity = effectiveSettings.GravityStrength;
+            planet.Initialize(effectiveSettings, seed, radius, gravity);
 
             TerrainField field = PlanetGenerator.GenerateBaseShape(radius, planet.Seed);
             ChunkGrid chunkGrid = new ChunkGrid(radius, chunkSize);
 
             ChunkTerrainRenderer renderer = GetComponent<ChunkTerrainRenderer>();
             renderer.Initialize(field, chunkGrid, radius);
+
+            // Geological layers — vertex-color rendering by depth
+            var profile = GeologicalProfile.EarthLike(seed, 0.3f);
+            renderer.SetGeologicalProfile(profile);
+
+            // Material from shader — no .mat asset required
+            var shader = Shader.Find("SDFTerrain/VertexColor");
+            if (shader != null)
+            {
+                renderer.SetMaterial(new Material(shader));
+            }
+
+            // Zoom camera to see the whole planet
+            Camera cam = Camera.main;
+            if (cam != null && cam.orthographic)
+            {
+                cam.orthographicSize = radius + 10f;
+            }
+
             renderer.RebuildDirtyChunks();
 
             SDFDebugView sdfDebugView = GetComponent<SDFDebugView>();
@@ -39,6 +61,13 @@ namespace SDFTerrain.Terrain
 
             renderer.TerrainChanged += sdfDebugView.NotifyTerrainChanged;
             renderer.TerrainChanged += gridDebugView.NotifyTerrainChanged;
+        }
+
+        private static PlanetSettings CreateDefaultSettings()
+        {
+            var settings = ScriptableObject.CreateInstance<PlanetSettings>();
+            settings.hideFlags = HideFlags.HideAndDontSave;
+            return settings;
         }
     }
 }

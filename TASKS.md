@@ -98,11 +98,10 @@ Store terrain edit history. Support undo/redo.
 ## 18. Material sampling ✅
 `MaterialSampler`, `MaterialBand`, `MaterialSampleSettings` — assign materials by depth/position.
 
-## 19. Geological layers
+## 19. Geological layers ✅
 
 Generate layered composition (soil → stone → mantle) based on depth, heat, pressure, noise.
-
-Tests: layer depth correctness, continuity.
+Wire geological profile to ChunkTerrainRenderer for vertex-color rendering. Create playable demo scene.
 
 ---
 

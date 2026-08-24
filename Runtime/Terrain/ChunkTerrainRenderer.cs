@@ -33,6 +33,24 @@ namespace SDFTerrain.Terrain
         public float CellSize => cellSize;
 
         /// <summary>
+        /// Configures the geological profile for vertex-color rendering. Call before
+        /// <see cref="RebuildDirtyChunks"/> so the next rebuild samples layer colors.
+        /// </summary>
+        public void SetGeologicalProfile(GeologicalProfile profile)
+        {
+            geologicalProfile = profile;
+        }
+
+        /// <summary>
+        /// Replaces the MeshRenderer's shared material. Useful for runtime demos that
+        /// create a Material from a shader without having a .mat asset on disk.
+        /// </summary>
+        public void SetMaterial(Material mat)
+        {
+            material = mat;
+        }
+
+        /// <summary>
         /// Raised after dirty chunks are rebuilt (including via <see cref="ApplyBrush"/>), so
         /// debug views sampling the same field (e.g. <see cref="SDFDebugView"/>,
         /// <see cref="MarchingSquaresGridDebugView"/>) know to re-sample rather than keep showing
