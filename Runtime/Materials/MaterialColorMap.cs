@@ -51,5 +51,37 @@ namespace SDFTerrain.Materials
 
             return Color.gray;
         }
+
+        /// <summary>
+        /// Returns the display color for a given numeric <see cref="MaterialId"/>.
+        /// Checks the <paramref name="database"/> for a registered material definition;
+        /// falls back to the built-in palette for Air and Unknown.
+        /// </summary>
+        public static Color GetColor(MaterialId materialId, MaterialDatabase database = null)
+        {
+            if (materialId == MaterialId.Air)
+                return Color.white;
+            if (materialId == MaterialId.Unknown)
+                return Color.gray;
+
+            if (materialId.IsValid && database != null)
+            {
+                var def = database.GetMaterial(materialId);
+                if (def != null)
+                    return def.Color;
+            }
+
+            // Fallback: generate a deterministic color from the numeric ID.
+            // This ensures every registered material has a visible color even without
+            // a MaterialDefinition asset.
+            return DeterministicColor(materialId.Value);
+        }
+
+        private static Color DeterministicColor(int value)
+        {
+            // Simple hash-based color: ensures adjacent IDs look different.
+            float hue = ((value * 0.618033988749895f) % 1.0f); // golden ratio step
+            return Color.HSVToRGB(hue, 0.4f, 0.85f);
+        }
     }
 }

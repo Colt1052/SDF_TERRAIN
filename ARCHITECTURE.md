@@ -1,7 +1,7 @@
 # SDF_Terrain — Architecture Document
 
-**Version:** 2.0
-**Status:** Phase 1-3 implemented, Phase 4 in progress
+**Version:** 3.0
+**Status:** Phase 1-5 implemented (foundation, terrain, editing, materials, resources + persistence)
 
 ---
 
@@ -16,28 +16,46 @@ Unity 6 (6000.0.45f1), URP 2D, Input System, Test Framework installed.
 ## 2. System Layers
 
 ```
-┌─────────────────────────────────────────────────┐
-│   Brush UI / Input (BrushUI, BrushInputHandler)  │
-├─────────────────────────────────────────────────┤
-│   Rendering (Mesh, Materials, Gizmos)            │
-├─────────────────────────────────────────────────┤
-│   Collision (PolygonCollider2D)                  │
-├─────────────────────────────────────────────────┤
-│   Meshing (Marching Squares → MeshData)          │
-├─────────────────────────────────────────────────┤
-│   Chunk System (dirty tracking, indexing)        │
-├─────────────────────────────────────────────────┤
-│   Terrain SDF (authoritative data)               │
-├─────────────────────────────────────────────────┤
-│   Planet Generator (seeded, deterministic)       │
-├─────────────────────────────────────────────────┤
-│   Planet / PlanetManager (identity, lifetime)    │
-├─────────────────────────────────────────────────┤
-│   Core Math (coordinates, radial vectors, RNG)   │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Persistence (WorldPersistence — file I/O, save slots)    │
+├──────────────────────────────────────────────────────────┤
+│  Resources (Inventory, ResourceYield, ExcavationSystem)   │
+├──────────────────────────────────────────────────────────┤
+│  Materials (MaterialLayer, MaterialDatabase, ColorMap)    │
+├──────────────────────────────────────────────────────────┤
+│  Brush UI / Input (BrushUI, BrushController)              │
+├──────────────────────────────────────────────────────────┤
+│  Rendering (Mesh, Shader Materials, Gizmos, DebugViews)   │
+├──────────────────────────────────────────────────────────┤
+│  Collision (PolygonCollider2D)                            │
+├──────────────────────────────────────────────────────────┤
+│  Meshing (Marching Squares → MeshData)                    │
+├──────────────────────────────────────────────────────────┤
+│  Chunk System (dirty tracking, indexing)                  │
+├──────────────────────────────────────────────────────────┤
+│  Terrain SDF (authoritative geometry)                     │
+├──────────────────────────────────────────────────────────┤
+│  Geological (GeologicalProfile, LayerGenerator)           │
+├──────────────────────────────────────────────────────────┤
+│  Planet Generator (seeded, deterministic)                 │
+├──────────────────────────────────────────────────────────┤
+│  Planet / PlanetManager (identity, lifetime)              │
+├──────────────────────────────────────────────────────────┤
+│  Core Math (coordinates, radial vectors, RNG)             │
+└──────────────────────────────────────────────────────────┘
 ```
 
 Each layer only depends on layers below it. Only brush/edit operations mutate the SDF.
+
+**Subsystem ownership:**
+- **SDF (TerrainField)** = geometry. Shape, edits, chunk-indexed sampling.
+- **GeologicalProfile** = natural material assignment by depth. Pure data.
+- **MaterialLayer** = physical material state. Player edits override geology.
+- **MaterialDatabase** = material definitions (ScriptableObjects). Registry.
+- **ResourceSystem** = inventory/economy. Independent of terrain geometry.
+- **TerrainExcavationSystem** = pipeline orchestration (mine → resources → place).
+- **WorldPersistence** = save/load I/O. Wires WorldSaveData to disk + PlayerPrefs.
+- **TerrainRenderer/ChunkTerrainRenderer** = visualization. Derives meshes/colors.
 
 ---
 
@@ -81,10 +99,29 @@ Each layer only depends on layers below it. Only brush/edit operations mutate th
 - **TerrainColliderBuilder** — apply contours to `PolygonCollider2D`.
 
 ### Materials (`Runtime/Materials/`)
-- **MaterialDefinition** — ScriptableObject: 9 physical properties (density, hardness, friction, etc.).
+- **MaterialDefinition** — ScriptableObject: physical properties (density, hardness, color, etc.).
 - **MaterialDatabase** — static registry singleton, loads from Resources/Materials/.
 - **MaterialSampler** — assign materials to SDF positions based on band configuration.
 - **MaterialBand** — depth/position-based material assignment rule.
+- **MaterialId** — compact numeric struct. Air = 0, Unknown = -1.
+- **MaterialSample** — readonly struct: MaterialId, Concentration, IsSolid.
+- **MaterialEdit** — serializable struct: position, radius, MaterialId, order. Circular override region.
+- **MaterialLayer** — authoritative material state. Owns edit history, spatially-indexed sampling, geological fallback.
+- **MaterialColorMap** — maps MaterialId → Color for vertex-color rendering. Database-aware with fallback palette.
+- **GeologicalProfile** — layer sequence from surface to core, heat/pressure gradients.
+- **GeologicalLayer** — one stratum: material ID, start depth, noise amplitude, melt threshold.
+- **GeologicalLayerGenerator** — pure-function utility: (world pos, seed, profile) → material ID.
+- **GeologicalLayerNoise** — deterministic sine-harmonic noise for boundary perturbation.
+- **MaterialVolumeResult** — maps MaterialId → removed volume (area). Independent of inventory.
+
+### Resources (`Runtime/Resources/`)
+- **Inventory** — string-keyed slots with quantities and stack limits.
+- **ResourceYieldDefinition** — maps MaterialId → ResourceId → YieldPerUnitArea.
+- **ResourceYieldTable** — collection of yield rules, converts MaterialVolumeResult → resource quantities.
+- **ExcavationCalculator** — grid-based material sampling within circular regions.
+- **TerrainExcavationSystem** — pipeline orchestration: excavate (terrain removal → materials → resources → inventory) and place (inventory check → SDF addition → material override).
+- **WorldSaveData** — JsonUtility-compatible serialization container for SDF edits, material edits, and inventory.
+- **WorldPersistence** — MonoBehaviour: slot-based file I/O saves, auto-save on quit, load on start, PlayerPrefs metadata.
 
 ### UI (`Runtime/UI/` + `Runtime/Terrain/`)
 - **BrushUI** — dynamic canvas: style selector buttons + parameter sliders.
@@ -122,6 +159,63 @@ Square Cartesian chunks share boundary lattice points that sample the same field
 
 ### Edit Sampling
 `EnableChunkIndexing()` maps each edit to overlapping grid cells (packed col/row key). `Sample(position, chunkIndex)` scans only local edits — O(chunk_local_edits), not O(total_lifetime_edits). `PruneDeadEdits()` reclaims zero-radius entries. CSG Max/Min commutativity guarantees excluding distant edits produces identical results.
+
+### Material Sampling
+```
+Vertex position (during chunk rebuild)
+  → MaterialLayer.Sample(TerrainField, position, chunkIndex)
+    → SDF check: if in air → MaterialId.Air
+    → Edit scan (last-first): first edit containing position wins
+    → Geological fallback: GeologicalLayerGenerator.Sample(position, profile) → MaterialId
+  → MaterialColorMap.GetColor(MaterialId) → vertex Color
+```
+
+### Excavation (Mining)
+```
+ExcavationSystem.Excavate(position, radius, chunkIndex)
+  → ExcavationCalculator.CalculateRemoval(MaterialLayer, TerrainField, ...)
+    → Grid-based material sampling within circular region
+    → MaterialVolumeResult (MaterialId → area removed)
+  → ResourceYieldTable.Convert(volumes) → Dictionary<resourceId, quantity>
+  → Inventory.Add(...) for each resource
+  → TerrainField.ApplyEdit(TerrainEdit removal)
+  → Returns ExcavationResult (volumes + resources + wasApplied)
+```
+
+### Placement (Building)
+```
+ExcavationSystem.Place(position, radius, materialId, resourceId)
+  → Calculate area = PI * r^2
+  → Look up yield rate for materialId
+  → Calculate itemsNeeded = ceil(area * yieldRate)
+  → Inventory.HasAtLeast(resourceId, itemsNeeded)?
+    → No: fail atomically, nothing consumed
+    → Yes: consume resources
+      → TerrainField.ApplyEdit(additive terrain edit)
+      → MaterialLayer.ApplyEdit(position, radius, materialId)
+      → Returns PlacementResult (material + consumed + succeeded)
+```
+
+### Persistence (Save/Load)
+```
+Save:
+  WorldPersistence.Save(slot)
+    → WorldSaveData.Capture(TerrainField, MaterialLayer, Inventory, seed)
+    → JsonUtility.ToJson()
+    → File.WriteAllText(persistentDataPath/SDFPlanetSaves/slot_N.json)
+    → PlayerPrefs metadata (name, seed, timestamp)
+
+Load:
+  WorldPersistence.Load(slot)
+    → File.ReadAllText() → JsonUtility.FromJson<WorldSaveData>()
+    → Create fresh TerrainField, MaterialLayer, Inventory
+    → WorldSaveData.Apply(field, layer, inventory)
+    → Reinitialize ChunkTerrainRenderer with fresh field
+    → Rewire TerrainExcavationSystem
+    → RebuildDirtyChunks()
+
+Auto-save on quit (configurable slot). Auto-load on start (configurable slot).
+```
 
 ---
 
