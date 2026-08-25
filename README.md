@@ -2,7 +2,7 @@
 
 Simulation-driven terrain system for Unity that represents planets as continuous Signed Distance Fields. Every planet is a circle whose terrain, caves, materials, and geology derive from a deterministic seed.
 
-**Current State:** Phase 1-4 complete (foundation, terrain, editing, materials + geological layers). Geological layers are visible via vertex-color rendering. Next: ore generation (Task 20).
+**Current State:** Phase 1-5 complete (foundation, terrain, editing, materials + geological layers, resources + persistence). Material vertex colors visible. Save/load system wired. Next: performance optimization (Task 14).
 
 ---
 
@@ -15,6 +15,7 @@ SDF_Terrain/
 ├── SCOPE.md                # Vision and design principles
 ├── ARCHITECTURE.md         # System layers, tech decisions, data flow
 ├── TASKS.md                # Task tracker (1-56 + subtasks)
+├── RESOURCETASKS.md        # Material & Resource system implementation tracker
 ├── docs/
 │   └── task-archive.md     # Detailed notes for completed tasks
 │
@@ -25,13 +26,14 @@ SDF_Terrain/
 │   ├── Terrain/            # SDF field, chunks, brushes, sampling, rendering
 │   ├── Terrain/Brush/      # Brush behavior abstraction (ScriptableObjects)
 │   ├── Meshing/            # MarchingSquaresMesher, ColliderContourBuilder, MeshData
-│   ├── Materials/          # MaterialDefinition, MaterialDatabase, MaterialSampler
+│   ├── Materials/          # MaterialId, MaterialLayer, MaterialDatabase, GeologicalProfile
+│   ├── Resources/          # Inventory, ExcavationSystem, WorldPersistence
 │   └── UI/                 # BrushToolbar, TerrainStats
 │
 ├── Editor/                 # Asset creators, editor extensions
 ├── Scripts/Debug/          # Debug visualizations
 └── Tests/                  # EditMode + PlayMode test assemblies
-    └── EditMode/           # ~24 test files
+    └── EditMode/           # ~25 test files
 ```
 
 ---
@@ -81,6 +83,12 @@ Each layer only depends on layers below it.
 | `PlanetManager` | `Runtime/Planet/PlanetManager.cs` | Registration, lookup, multi-planet management. |
 | `MaterialDatabase` | `Runtime/Materials/MaterialDatabase.cs` | Registry of MaterialDefinition ScriptableObjects. |
 | `MaterialSampler` | `Runtime/Materials/MaterialSampler.cs` | Assign materials to SDF positions based on bands. |
+| `MaterialLayer` | `Runtime/Materials/MaterialLayer.cs` | Authoritative material state. Edits override geology. |
+| `MaterialColorMap` | `Runtime/Materials/MaterialColorMap.cs` | Maps MaterialId → Color for vertex-color rendering. |
+| `TerrainExcavationSystem` | `Runtime/Resources/TerrainExcavationSystem.cs` | Pipeline: mine → resources → place. |
+| `Inventory` | `Runtime/Resources/Inventory.cs` | String-keyed resource slots with quantities. |
+| `WorldSaveData` | `Runtime/Resources/WorldSaveData.cs` | Serializable snapshot of terrain + material + inventory state. |
+| `WorldPersistence` | `Runtime/Resources/WorldPersistence.cs` | Slot-based save/load file I/O with auto-save on quit. |
 | `BrushController` | `Runtime/Terrain/Brush/BrushController.cs` | Brush state, parameter management, events. |
 | `BrushDefinition` | `Runtime/Terrain/Brush/BrushDefinition.cs` | ScriptableObject: name, icon, behavior, parameters. |
 | `BrushBehavior` | `Runtime/Terrain/Brush/BrushBehavior.cs` | Abstract base for brush logic (Add/Remove/Smooth). |

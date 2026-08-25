@@ -30,6 +30,14 @@ namespace SDFTerrain.Terrain
         [Tooltip("When assigned, terrain vertices are colored by geological layer (dirt, stone, mantle, etc.)")]
         [SerializeField] private GeologicalProfile geologicalProfile;
 
+        /// <summary>
+        /// Optional authoritative material layer. When assigned, material colors come from
+        /// <see cref="MaterialLayer"/> (which includes player edits + geological fallback).
+        /// Takes precedence over <see cref="geologicalProfile"/>.
+        /// </summary>
+        [Tooltip("When assigned, terrain vertices are colored by material state (edits + geology)")]
+        [SerializeField] private MaterialLayer materialLayer;
+
         public float CellSize => cellSize;
 
         /// <summary>
@@ -39,6 +47,15 @@ namespace SDFTerrain.Terrain
         public void SetGeologicalProfile(GeologicalProfile profile)
         {
             geologicalProfile = profile;
+        }
+
+        /// <summary>
+        /// Configures the material layer for vertex-color rendering. Takes precedence over
+        /// <see cref="geologicalProfile"/> when both are set.
+        /// </summary>
+        public void SetMaterialLayer(MaterialLayer layer)
+        {
+            materialLayer = layer;
         }
 
         /// <summary>
@@ -63,6 +80,13 @@ namespace SDFTerrain.Terrain
 
         /// <summary>The terrain field this renderer was initialized with. Null before Initialize.</summary>
         public TerrainField Field => _field;
+
+        /// <summary>
+        /// Returns the chunk index that contains <paramref name="localPosition"/>.
+        /// Requires <see cref="Initialize"/> to have been called.
+        /// </summary>
+        public int GetChunkIndex(Vector2 localPosition) => _chunkGrid.GetChunkAt(localPosition).Index;
+
         private readonly Dictionary<int, ChunkView> _chunkViews = new Dictionary<int, ChunkView>();
         private readonly List<int> _rectBuffer = new List<int>();
 
@@ -367,9 +391,34 @@ namespace SDFTerrain.Terrain
 
             CartesianChunkFieldSampler.Result sampled = CartesianChunkFieldSampler.Sample(_field, chunk, cellSize);
 
-            // If a geological profile is assigned, sample per-grid-point colors for vertex-color rendering.
+            // If a material layer is assigned, use it (takes precedence over geological profile).
+            // If only geological profile is assigned, fall back to legacy geological sampling.
             Color[,] vertexColors = null;
-            if (geologicalProfile != null)
+            if (materialLayer != null)
+            {
+                int width = sampled.Samples.GetLength(0);
+                int height = sampled.Samples.GetLength(1);
+                vertexColors = new Color[width, height];
+
+                for (int x = 0; x < width; x++)
+                {
+                    for (int y = 0; y < height; y++)
+                    {
+                        Vector2 pos = sampled.Positions[x, y];
+                        float sdf = sampled.Samples[x, y];
+                        if (sdf > 0f)
+                        {
+                            vertexColors[x, y] = MaterialColorMap.GetColor(MaterialId.Air);
+                        }
+                        else
+                        {
+                            var sample = materialLayer.Sample(_field, pos, chunk.Index);
+                            vertexColors[x, y] = MaterialColorMap.GetColor(sample.MaterialId, materialLayer.GetDatabase());
+                        }
+                    }
+                }
+            }
+            else if (geologicalProfile != null)
             {
                 int width = sampled.Samples.GetLength(0);
                 int height = sampled.Samples.GetLength(1);

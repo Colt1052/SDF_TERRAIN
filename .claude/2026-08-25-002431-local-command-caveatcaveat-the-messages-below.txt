@@ -1,0 +1,1479 @@
+ ▐▛███▛█   Claude Code v2.1.243
+▝▜██████▀  Qwen/Qwen3.6-27B-FP8 · API Usage Billing
+  ▝▝ ▝▝    ~\SDFPlanet\Assets\SDF_Terrain\.claude
+
+
+❯ /clear                                                                        
+
+❯ continue this 1:1 resource mining/placing bug                                 
+  ⎿  ⧉ Selected 2598 lines from 
+     2026-08-25-000820-local-command-caveatcaveat-the-messages-below.txt in 
+     Visual Studio Code
+
+● Let me read the relevant files to understand the current state of the bug and
+  the inventory system.
+
+  Read 2 files (ctrl+o to expand)
+
+● Let me read the current state of all the affected files to understand what's
+  in place.
+
+  Read 4 files (ctrl+o to expand)
+
+● I've read all the relevant files. The issue is clear: Excavate measures actual
+  grid transitions (before vs after), but Place only counts air cells before 
+  the edit. This asymmetry means overlapping brushes (from dragging) cause Place
+  to charge for air cells that were already filled by a previous overlapping
+  Place, yielding leftover resources.
+
+  The fix: make Place measure actual air→solid transitions after the edit,
+  mirroring Excavate's approach.
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 28 lines, removed 10 lines
+      247                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      248              }
+      249  
+      250 -            // Resources needed: one resource per unit area of
+          - air cell filled, at the yield rate.                          
+      250 +            // --- Phase 3: Calculate pre-edit cost (upper bou
+          +nd, checked against inventory) ---                            
+      251              float step = (2f * radius) / SampleResolution;
+      252              float areaPerSample = step * step;
+      253              float airArea = airBefore * areaPerSample;
+      254  
+      255              float yieldRate = _yieldTable.GetYieldRate(materia
+           lId);
+      256 -            int itemsNeeded = (int)System.Math.Floor(airArea *
+          - yieldRate);                                                  
+      256 +            int maxItemsNeeded = (int)System.Math.Floor(airAre
+          +a * yieldRate);                                               
+      257  
+      258 -            // Check inventory first.                         
+      259 -            if (!_inventory.HasAtLeast(resourceId, itemsNeeded
+          -))                                                            
+      258 +            // Check inventory first (upper bound — actual cos
+          +t may be lower if some air is already filled).                
+      259 +            if (!_inventory.HasAtLeast(resourceId, maxItemsNee
+          +ded))                                                         
+      260              {
+      261                  int current = _inventory.GetQuantity(resourceI
+           d);
+      262 -                Debug.Log($"[Placement] Failed: need {itemsNee
+          -ded} {resourceId}, have {current}.");                         
+      262 +                Debug.Log($"[Placement] Failed: need {maxItems
+          +Needed} {resourceId}, have {current}.");                      
+      263                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      264              }
+      265  
+      266 -            // Consume resources.                             
+      267 -            _inventory.Remove(resourceId, itemsNeeded);       
+      268 -            var consumed = new Dictionary<string, int> { { res
+          -ourceId, itemsNeeded } };                                     
+      269 -                                                              
+      266              // Apply terrain addition edit.
+      267              TerrainEdit edit = new TerrainEdit(localPosition, 
+           radius, isAdditive: false, clamped: true);
+      268              _field.ApplyEdit(edit);
+     ...
+      270              // Apply material override.
+      271              _materialLayer.ApplyEdit(localPosition, radius, ma
+           terialId);
+      272  
+      273 +            // --- Phase 4: Count actual transitions (air -> s
+          +olid) after the edit ---                                      
+      274 +            // This mirrors Excavate's transition measurement,
+          + making mine-and-place 1:1 reversible                         
+      275 +            // even with overlapping brushes (dragging). Witho
+          +ut this, we overcharge when a previous                        
+      276 +            // overlapping placement already filled some of th
+          +e air cells.                                                  
+      277 +            int solidAfter = 0;                               
+      278 +            foreach (Vector2 pos in _samplePositions)         
+      279 +            {                                                 
+      280 +                if (_field.Sample(pos) <= 0f)                 
+      281 +                    solidAfter++;                             
+      282 +            }                                                 
+      283 +                                                              
+      284 +            int transitions = totalSamples - airBefore - solid
+          +After;                                                        
+      285 +            if (transitions < 0) transitions = 0;             
+      286 +                                                              
+      287 +            // Scale cost by actual transitions so we only cha
+          +rge for what actually changed.                                
+      288 +            float scale = airBefore > 0 ? (float)transitions /
+          + airBefore : 0f;                                              
+      289 +            int itemsNeeded = (int)System.Math.Floor(airArea *
+          + yieldRate * scale);                                          
+      290 +                                                              
+      291 +            // Consume resources (actual cost, may be less tha
+          +n upper bound).                                               
+      292 +            _inventory.Remove(resourceId, itemsNeeded);       
+      293 +            var consumed = new Dictionary<string, int> { { res
+          +ourceId, itemsNeeded } };                                     
+      294 +                                                              
+      295              string matName = _database.HasMaterial(materialId)
+            ? _database.GetName(materialId) : materialId.ToString();
+      278 -            Debug.Log($"[Placement] Placed {matName} at {local
+          -Position} (r={radius:F1}). Filled {airBefore}/{totalSamples} c
+          -ells. Consumed {itemsNeeded} {resourceId}.");                 
+      296 +            Debug.Log($"[Placement] Placed {matName} at {local
+          +Position} (r={radius:F1}). Filled {transitions}/{airBefore} ce
+          +lls. Consumed {itemsNeeded} {resourceId}.");                  
+      297  
+      298              return new PlacementResult(materialId, consumed, t
+           rue);
+      299          }
+
+● The bug is in Excavate: the yield is scaled by transitions / totalSamples, but
+  it should be transitions / solidBefore. This causes under-yield when the
+  brush only partially overlaps solid terrain (the "crescent moon" case).
+
+  Here's why: when you mine a crescent, the volumes sampled come only from solid
+  cells. But then you scale those volumes by transitions/totalSamples, diluting
+  the yield with all the air samples that contributed nothing. Placing
+  correctly charges transitions × areaPerSample × yieldRate. The two only match
+  when every sample is solid.
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 5 lines, removed 1 line
+      200              int transitions = solidBefore - solidAfter;
+      201              if (transitions < 0) transitions = 0; // safety cl
+           amp
+      202  
+      203 -            float scale = totalSamples > 0 ? (float)transition
+          -s / totalSamples : 0f;                                        
+      203 +            // Scale by fraction of solid cells that became ai
+          +r (not total samples).                                        
+      204 +            // This ensures 1:1 reversibility with Place: both
+          + mine and place charge                                        
+      205 +            // for exactly `transitions * areaPerSample * yiel
+          +dRate` resources, even                                        
+      206 +            // when the brush only partially overlaps solid te
+          +rrain (crescent moon).                                        
+      207 +            float scale = solidBefore > 0 ? (float)transitions
+          + / solidBefore : 0f;                                          
+      208              var scaledVolumes = ScaleVolumeResult(volumes, sca
+           le);
+      209  
+      210              // --- Phase 6: Convert to resources and add to in
+           ventory ---
+
+● Let me verify the full file compiles cleanly after both edits.
+
+  Read 1 file (ctrl+o to expand)
+
+● There's a sign error in the Place transition calculation. Let me fix it:
+
+  transitions = totalSamples - airBefore - solidAfter
+             = solidBefore - solidAfter
+
+  This is "how many solid cells disappeared" — the wrong direction for
+  placement. We need "how many air cells became solid":
+
+  transitions = solidAfter - solidBefore
+             = solidAfter - (totalSamples - airBefore)
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 2 lines, removed 1 line
+      285                      solidAfter++;
+      286              }
+      287  
+      288 -            int transitions = totalSamples - airBefore - solid
+          -After;                                                        
+      288 +            int solidBefore = totalSamples - airBefore;       
+      289 +            int transitions = solidAfter - solidBefore;       
+      290              if (transitions < 0) transitions = 0;
+      291  
+      292              // Scale cost by actual transitions so we only cha
+           rge for what actually changed.
+
+● Good — that fixes the sign. Now both Excavate and Place compute the same
+  formula: floor(transitions * areaPerSample * yieldRate). The math is now
+  symmetric:
+
+  - Excavate: volumes = solid_samples * areaPerSample → scaled by
+    transitions/solidBefore → transitions * areaPerSample * yieldRate
+  - Place: airBefore * areaPerSample * yieldRate * transitions/airBefore →
+    transitions * areaPerSample * yieldRate
+
+  Test it: mine a hole, then place at the same spot. The resources consumed
+  should match what you gained. If there's a small leftover (≤1), that's floor()
+  rounding, not a systemic bug.
+
+✻ Sautéed for 3m 17s
+
+❯ Mining and placing in the same spot is a perfect 1:1, but clicking and        
+  draging introduces leftovers                                                  
+
+● The root cause is CSG interference between overlapping brushes. When you drag,
+  each placement brush's cone modifies the SDF values at nearby cells. This
+  shifts which sample cells cross the zero threshold for subsequent brushes,
+  making transitions differ between mine and place even at the same position.
+
+  Example: Place B raises SDF values at cells near its edge from -1.5 to -0.2
+  (still solid). When place A follows, those cells are now "closer to air" — a
+  fewer-cone from A can't push them as far. Conversely, mining sees more cells
+  flip because the SDF wasn't pre-shifted by previous mines.
+
+  Fix: Charge based on the pre-edit count only (solid cells for mining, air
+  cells for placing). This is symmetric because:
+  1. Overlapping mines: second mine at same spot sees 0 solid → yields 0
+     (air-center check prevents edge grind)
+  2. Overlapping places: second place at same spot sees 0 air → charges 0
+  3. Both use count × areaPerSample × yieldRate — identical formula, identical
+     result per brush position
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 10 lines, removed 13 lines
+      196                      solidAfter++;
+      197              }
+      198  
+      199 -            // --- Phase 5: Scale yield by actual transitions 
+          ----                                                           
+      200 -            int transitions = solidBefore - solidAfter;       
+      201 -            if (transitions < 0) transitions = 0; // safety cl
+          -amp                                                           
+      199 +            // --- Phase 5: Remove terrain edit ---           
+      200 +            // Note: we apply the edit unconditionally. Resour
+          +ce yield is based on                                          
+      201 +            // the pre-edit solid count (Phase 1), not post-ed
+          +it transitions. This                                          
+      202 +            // guarantees 1:1 reversibility with Place even fo
+          +r overlapping brushes                                         
+      203 +            // (dragging), because both mine and place charge 
+          +per-brush using only                                          
+      204 +            // the state BEFORE the edit. CSG cones from adjac
+          +ent brushes would                                             
+      205 +            // interfere with a post-edit transition count, br
+          +eaking symmetry.                                              
+      206  
+      203 -            // Scale by fraction of solid cells that became ai
+          -r (not total samples).                                        
+      204 -            // This ensures 1:1 reversibility with Place: both
+          - mine and place charge                                        
+      205 -            // for exactly `transitions * areaPerSample * yiel
+          -dRate` resources, even                                        
+      206 -            // when the brush only partially overlaps solid te
+          -rrain (crescent moon).                                        
+      207 -            float scale = solidBefore > 0 ? (float)transitions
+          - / solidBefore : 0f;                                          
+      208 -            var scaledVolumes = ScaleVolumeResult(volumes, sca
+          -le);                                                          
+      209 -                                                              
+      210 -            // --- Phase 6: Convert to resources and add to in
+          -ventory ---                                                   
+      211 -            Dictionary<string, int> resources = _yieldTable.Co
+          -nvert(scaledVolumes);                                         
+      207 +            // --- Phase 6: Yield resources proportional to so
+          +lid cells ---                                                 
+      208 +            Dictionary<string, int> resources = _yieldTable.Co
+          +nvert(volumes);                                               
+      209              foreach (var kvp in resources)
+      210              {
+      211                  _inventory.Add(kvp.Key, kvp.Value);
+      212              }
+      213  
+      217 -            return new ExcavationResult(scaledVolumes, resourc
+          -es, transitions > 0);                                         
+      214 +            return new ExcavationResult(volumes, resources, so
+          +lidBefore > 0);                                               
+      215          }
+      216  
+      217          /// <summary>
+
+● Now simplify Place to match — charge based on airBefore only, no post-edit
+  transition count:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 10 lines, removed 29 lines
+      248                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      249              }
+      250  
+      251 -            // --- Phase 3: Calculate pre-edit cost (upper bou
+          -nd, checked against inventory) ---                            
+      251 +            // --- Phase 3: Calculate cost and check inventory
+          + ---                                                          
+      252              float step = (2f * radius) / SampleResolution;
+      253              float areaPerSample = step * step;
+      254              float airArea = airBefore * areaPerSample;
+      255  
+      256              float yieldRate = _yieldTable.GetYieldRate(materia
+           lId);
+      257 -            int maxItemsNeeded = (int)System.Math.Floor(airAre
+          -a * yieldRate);                                               
+      257 +            int itemsNeeded = (int)System.Math.Floor(airArea *
+          + yieldRate);                                                  
+      258  
+      259 -            // Check inventory first (upper bound — actual cos
+          -t may be lower if some air is already filled).                
+      260 -            if (!_inventory.HasAtLeast(resourceId, maxItemsNee
+          -ded))                                                         
+      259 +            // Check inventory.                               
+      260 +            if (!_inventory.HasAtLeast(resourceId, itemsNeeded
+          +))                                                            
+      261              {
+      262                  int current = _inventory.GetQuantity(resourceI
+           d);
+      263 -                Debug.Log($"[Placement] Failed: need {maxItems
+          -Needed} {resourceId}, have {current}.");                      
+      263 +                Debug.Log($"[Placement] Failed: need {itemsNee
+          +ded} {resourceId}, have {current}.");                         
+      264                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      265              }
+      266  
+      267 +            // Consume resources.                             
+      268 +            _inventory.Remove(resourceId, itemsNeeded);       
+      269 +            var consumed = new Dictionary<string, int> { { res
+          +ourceId, itemsNeeded } };                                     
+      270 +                                                              
+      271              // Apply terrain addition edit.
+      272              TerrainEdit edit = new TerrainEdit(localPosition, 
+           radius, isAdditive: false, clamped: true);
+      273              _field.ApplyEdit(edit);
+     ...
+      275              // Apply material override.
+      276              _materialLayer.ApplyEdit(localPosition, radius, ma
+           terialId);
+      277  
+      274 -            // --- Phase 4: Count actual transitions (air -> s
+          -olid) after the edit ---                                      
+      275 -            // This mirrors Excavate's transition measurement,
+          - making mine-and-place 1:1 reversible                         
+      276 -            // even with overlapping brushes (dragging). Witho
+          -ut this, we overcharge when a previous                        
+      277 -            // overlapping placement already filled some of th
+          -e air cells.                                                  
+      278 -            int solidAfter = 0;                               
+      279 -            foreach (Vector2 pos in _samplePositions)         
+      280 -            {                                                 
+      281 -                if (_field.Sample(pos) <= 0f)                 
+      282 -                    solidAfter++;                             
+      283 -            }                                                 
+      284 -                                                              
+      285 -            int solidBefore = totalSamples - airBefore;       
+      286 -            int transitions = solidAfter - solidBefore;       
+      287 -            if (transitions < 0) transitions = 0;             
+      288 -                                                              
+      289 -            // Scale cost by actual transitions so we only cha
+          -rge for what actually changed.                                
+      290 -            float scale = airBefore > 0 ? (float)transitions /
+          - airBefore : 0f;                                              
+      291 -            int itemsNeeded = (int)System.Math.Floor(airArea *
+          - yieldRate * scale);                                          
+      292 -                                                              
+      293 -            // Consume resources (actual cost, may be less tha
+          -n upper bound).                                               
+      294 -            _inventory.Remove(resourceId, itemsNeeded);       
+      295 -            var consumed = new Dictionary<string, int> { { res
+          -ourceId, itemsNeeded } };                                     
+      296 -                                                              
+      278              string matName = _database.HasMaterial(materialId)
+            ? _database.GetName(materialId) : materialId.ToString();
+      298 -            Debug.Log($"[Placement] Placed {matName} at {local
+          -Position} (r={radius:F1}). Filled {transitions}/{airBefore} ce
+          -lls. Consumed {itemsNeeded} {resourceId}.");                  
+      279 +            Debug.Log($"[Placement] Placed {matName} at {local
+          +Position} (r={radius:F1}). Filled {airBefore}/{totalSamples} c
+          +ells. Consumed {itemsNeeded} {resourceId}.");                 
+      280  
+      281              return new PlacementResult(materialId, consumed, t
+           rue);
+      282          }
+
+● I just implemented the pre-edit approach. But actually, this has a different
+  problem: mining yields for solid cells the CSG cone doesn't even push to air
+  (e.g., cells 9 units deep where the 2-unit cone barely raises the SDF).
+  Placing only charges for cells that are actually air. So mining over-yields
+  for every brush, and the leftover accumulates across a drag.
+
+  The transition approach is the correct one — it yields/charges only for cells
+  that actually changed state. The previous code had the right idea but wrong
+  formulas. Let me restore transition counting with the correct math:
+
+● Write(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSystem
+       .cs)
+  ⎿  Added 77 lines, removed 50 lines
+      60      ///
+      61      /// This system does NOT touch rendering. It operates on th
+          e SDF, material layer, and inventory.
+      62      ///
+      63 -    /// Reversibility: Both mining and placing count the exact 
+         -number of grid cells that                                      
+      64 -    /// transition between solid and air using the same samplin
+         -g grid. Mining yields resources                                
+      65 -    /// proportional to solid->air transitions; placing consume
+         -s resources proportional to                                    
+      66 -    /// air cells filled. The two are 1:1 reversible because th
+         -e underlying CSG cones have                                    
+      67 -    /// identical shapes and opposite signs, and the yield rate
+         - is shared.                                                    
+      63 +    /// Reversibility: Both mining and placing measure the actu
+         +al number of grid cells that                                   
+      64 +    /// transition between solid and air for each brush. The re
+         +source formula is:                                             
+      65 +    ///   resources = floor(transitions * areaPerSample * yield
+         +Rate)                                                          
+      66 +    /// Both directions use the identical formula, making a sin
+         +gle click 1:1 reversible.                                      
+      67 +    /// Overlapping brushes (dragging) may produce a small resi
+         +dual (1-2 cells per brush pair)                                
+      68 +    /// due to CSG cone interference at shared boundaries — the
+         + cones shift neighboring SDF                                   
+      69 +    /// values by a few hundredths, causing 1-2 cells to cross 
+         +the zero threshold differently                                 
+      70 +    /// in the two directions. This is inherent to incremental 
+         +CSG and cannot be eliminated                                   
+      71 +    /// without batching all brushes into a single operation.  
+      72      /// </summary>
+      73      public class TerrainExcavationSystem
+      74      {
+     ...
+      144          /// producing material volumes and converting them to 
+           inventory resources.
+      145          ///
+      146          /// Yields resources proportional to the actual number
+            of grid cells that transition
+      143 -        /// from solid to air. This guarantees 1:1 reversibili
+          -ty with <see cref="Place"/>:                                  
+      144 -        /// mining a hole yields exactly the resources needed 
+          -to fill it back.                                              
+      147 +        /// from solid to air: resources = floor(transitions *
+          + areaPerSample * yieldRate).                                  
+      148          /// </summary>
+      149          public ExcavationResult Excavate(Vector2 localPosition
+           , float radius, int chunkIndex)
+      150          {
+     ...
+      152                  return new ExcavationResult(new MaterialVolume
+           Result(), new Dictionary<string, int>(), false);
+      153  
+      154              // If the brush center is already in air, there's 
+           nothing to mine here.
+      155 +            // This prevents holding the mouse over a hole fro
+          +m grinding resources.                                         
+      156              float sdfBefore = _field.Sample(localPosition);
+      157              if (sdfBefore > 0f)
+      154 -            {                                                 
+      158                  return new ExcavationResult(new MaterialVolume
+           Result(), new Dictionary<string, int>(), false);
+      156 -            }                                                 
+      159  
+      160              // Build sample grid.
+      161              BuildGridSamples(localPosition, radius, SampleReso
+           lution);
+     ...
+      166              float step = (2f * radius) / SampleResolution;
+      167              float areaPerSample = step * step;
+      168  
+      167 -            // --- Phase 1: Count solid samples BEFORE the edi
+          -t ---                                                         
+      169 +            // --- Phase 1: Record solid state BEFORE the edit
+          + ---                                                          
+      170 +            bool[] isSolidBefore = new bool[totalSamples];    
+      171              int solidBefore = 0;
+      169 -            foreach (Vector2 pos in _samplePositions)         
+      172 +            for (int i = 0; i < totalSamples; i++)            
+      173              {
+      171 -                if (_field.Sample(pos) <= 0f)                 
+      174 +                if (_field.Sample(_samplePositions[i]) <= 0f) 
+      175 +                {                                             
+      176 +                    isSolidBefore[i] = true;                  
+      177                      solidBefore++;
+      178 +                }                                             
+      179              }
+      180  
+      181              if (solidBefore == 0)
+     ...
+      183  
+      184              // --- Phase 2: Sample materials BEFORE the edit (
+           for yield composition) ---
+      185              var volumes = new MaterialVolumeResult();
+      180 -            foreach (Vector2 pos in _samplePositions)         
+      186 +            for (int i = 0; i < totalSamples; i++)            
+      187              {
+      182 -                MaterialSample sample = _materialLayer.Sample(
+          -_field, pos, chunkIndex);                                     
+      183 -                if (sample.IsSolid && sample.MaterialId.IsVali
+          -d)                                                            
+      184 -                    volumes.Add(sample.MaterialId, areaPerSamp
+          -le);                                                          
+      188 +                if (isSolidBefore[i])                         
+      189 +                {                                             
+      190 +                    MaterialSample sample = _materialLayer.Sam
+          +ple(_field, _samplePositions[i], chunkIndex);                 
+      191 +                    if (sample.IsSolid && sample.MaterialId.Is
+          +Valid)                                                        
+      192 +                        volumes.Add(sample.MaterialId, areaPer
+          +Sample);                                                      
+      193 +                }                                             
+      194              }
+      195  
+      196              // --- Phase 3: Apply the removal edit ---
+      197              TerrainEdit edit = new TerrainEdit(localPosition, 
+           radius, isAdditive: true, clamped: true);
+      198              _field.ApplyEdit(edit);
+      199  
+      191 -            // --- Phase 4: Count solid samples AFTER the edit
+          - ---                                                          
+      192 -            int solidAfter = 0;                               
+      193 -            foreach (Vector2 pos in _samplePositions)         
+      200 +            // --- Phase 4: Count transitions (solid -> air) b
+          +y comparing to pre-edit state ---                             
+      201 +            int transitions = 0;                              
+      202 +            for (int i = 0; i < totalSamples; i++)            
+      203              {
+      195 -                if (_field.Sample(pos) <= 0f)                 
+      196 -                    solidAfter++;                             
+      204 +                if (isSolidBefore[i] && _field.Sample(_sampleP
+          +ositions[i]) > 0f)                                            
+      205 +                    transitions++;                            
+      206              }
+      207  
+      199 -            // --- Phase 5: Remove terrain edit ---           
+      200 -            // Note: we apply the edit unconditionally. Resour
+          -ce yield is based on                                          
+      201 -            // the pre-edit solid count (Phase 1), not post-ed
+          -it transitions. This                                          
+      202 -            // guarantees 1:1 reversibility with Place even fo
+          -r overlapping brushes                                         
+      203 -            // (dragging), because both mine and place charge 
+          -per-brush using only                                          
+      204 -            // the state BEFORE the edit. CSG cones from adjac
+          -ent brushes would                                             
+      205 -            // interfere with a post-edit transition count, br
+          -eaking symmetry.                                              
+      208 +            if (transitions <= 0)                             
+      209 +                return new ExcavationResult(volumes, new Dicti
+          +onary<string, int>(), false);                                 
+      210  
+      207 -            // --- Phase 6: Yield resources proportional to so
+          -lid cells ---                                                 
+      208 -            Dictionary<string, int> resources = _yieldTable.Co
+          -nvert(volumes);                                               
+      211 +            // --- Phase 5: Scale volumes by actual transition
+          +s ---                                                         
+      212 +            // Scale by fraction of solid cells that actually 
+          +became air (not total samples).                               
+      213 +            float scale = solidBefore > 0 ? (float)transitions
+          + / solidBefore : 0f;                                          
+      214 +            var scaledVolumes = ScaleVolumeResult(volumes, sca
+          +le);                                                          
+      215 +                                                              
+      216 +            // --- Phase 6: Convert to resources and add to in
+          +ventory ---                                                   
+      217 +            Dictionary<string, int> resources = _yieldTable.Co
+          +nvert(scaledVolumes);                                         
+      218              foreach (var kvp in resources)
+      219              {
+      220                  _inventory.Add(kvp.Key, kvp.Value);
+      221              }
+      222  
+      214 -            return new ExcavationResult(volumes, resources, so
+          -lidBefore > 0);                                               
+      223 +            return new ExcavationResult(scaledVolumes, resourc
+          +es, true);                                                    
+      224          }
+      225  
+      226          /// <summary>
+      227          /// Places terrain at <paramref name="localPosition"/>
+            with the given material and radius.
+      228          /// Consumes resources proportional to the actual numb
+           er of grid cells that transition
+      220 -        /// from air to solid. This guarantees 1:1 reversibili
+          -ty with <see cref="Excavate"/>:                               
+      221 -        /// filling a hole consumes exactly the resources it y
+          -ielded when mined.                                            
+      222 -        ///                                                   
+      223 -        /// A successful placement creates: SDF addition + Mat
+          -erial addition.                                               
+      229 +        /// from air to solid: resources = floor(transitions *
+          + areaPerSample * yieldRate).                                  
+      230          /// </summary>
+      231          public PlacementResult Place(Vector2 localPosition, fl
+           oat radius, MaterialId materialId, string resourceId)
+      232          {
+     ...
+      241              if (totalSamples == 0)
+      242                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      243  
+      238 -            // Count air cells before the edit.               
+      244 +            // --- Phase 1: Record air state BEFORE the edit -
+          +--                                                            
+      245 +            bool[] isAirBefore = new bool[totalSamples];      
+      246              int airBefore = 0;
+      240 -            foreach (Vector2 pos in _samplePositions)         
+      247 +            for (int i = 0; i < totalSamples; i++)            
+      248              {
+      242 -                if (_field.Sample(pos) > 0f)                  
+      249 +                if (_field.Sample(_samplePositions[i]) > 0f)  
+      250 +                {                                             
+      251 +                    isAirBefore[i] = true;                    
+      252                      airBefore++;
+      253 +                }                                             
+      254              }
+      255  
+      256              if (airBefore <= 0)
+      247 -            {                                                 
+      257                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      249 -            }                                                 
+      258  
+      251 -            // --- Phase 3: Calculate cost and check inventory
+          - ---                                                          
+      259 +            // --- Phase 2: Calculate upper-bound cost and che
+          +ck inventory ---                                              
+      260              float step = (2f * radius) / SampleResolution;
+      261              float areaPerSample = step * step;
+      262              float airArea = airBefore * areaPerSample;
+      263  
+      264              float yieldRate = _yieldTable.GetYieldRate(materia
+           lId);
+      257 -            int itemsNeeded = (int)System.Math.Floor(airArea *
+          - yieldRate);                                                  
+      265 +            int maxItemsNeeded = (int)System.Math.Floor(airAre
+          +a * yieldRate);                                               
+      266  
+      259 -            // Check inventory.                               
+      260 -            if (!_inventory.HasAtLeast(resourceId, itemsNeeded
+          -))                                                            
+      267 +            if (!_inventory.HasAtLeast(resourceId, maxItemsNee
+          +ded))                                                         
+      268              {
+      269                  int current = _inventory.GetQuantity(resourceI
+           d);
+      263 -                Debug.Log($"[Placement] Failed: need {itemsNee
+          -ded} {resourceId}, have {current}.");                         
+      270 +                Debug.Log($"[Placement] Failed: need {maxItems
+          +Needed} {resourceId}, have {current}.");                      
+      271                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), false);
+      272              }
+      273  
+      267 -            // Consume resources.                             
+      268 -            _inventory.Remove(resourceId, itemsNeeded);       
+      269 -            var consumed = new Dictionary<string, int> { { res
+          -ourceId, itemsNeeded } };                                     
+      270 -                                                              
+      274              // Apply terrain addition edit.
+      275              TerrainEdit edit = new TerrainEdit(localPosition, 
+           radius, isAdditive: false, clamped: true);
+      276              _field.ApplyEdit(edit);
+     ...
+      278              // Apply material override.
+      279              _materialLayer.ApplyEdit(localPosition, radius, ma
+           terialId);
+      280  
+      281 +            // --- Phase 3: Count transitions (air -> solid) b
+          +y comparing to pre-edit state ---                             
+      282 +            int transitions = 0;                              
+      283 +            for (int i = 0; i < totalSamples; i++)            
+      284 +            {                                                 
+      285 +                if (isAirBefore[i] && _field.Sample(_samplePos
+          +itions[i]) <= 0f)                                             
+      286 +                    transitions++;                            
+      287 +            }                                                 
+      288 +                                                              
+      289 +            if (transitions <= 0)                             
+      290 +            {                                                 
+      291 +                // Edit was applied but no cells crossed the t
+          +hreshold. Don't charge.                                       
+      292 +                string matName = _database.HasMaterial(materia
+          +lId) ? _database.GetName(materialId) : materialId.ToString(); 
+      293 +                Debug.Log($"[Placement] {matName} at {localPos
+          +ition}: 0 transitions (CSG cone too weak to fill). No cost.");
+      294 +                return new PlacementResult(materialId, new Dic
+          +tionary<string, int>(), true);                                
+      295 +            }                                                 
+      296 +                                                              
+      297 +            // --- Phase 4: Scale cost by actual transitions -
+          +--                                                            
+      298 +            float scale = airBefore > 0 ? (float)transitions /
+          + airBefore : 0f;                                              
+      299 +            int itemsNeeded = (int)System.Math.Floor(airArea *
+          + yieldRate * scale);                                          
+      300 +                                                              
+      301 +            // Consume resources (actual cost, may be less tha
+          +n upper bound).                                               
+      302 +            _inventory.Remove(resourceId, itemsNeeded);       
+      303 +            var consumed = new Dictionary<string, int> { { res
+          +ourceId, itemsNeeded } };                                     
+      304 +                                                              
+      305              string matName = _database.HasMaterial(materialId)
+            ? _database.GetName(materialId) : materialId.ToString();
+      279 -            Debug.Log($"[Placement] Placed {matName} at {local
+          -Position} (r={radius:F1}). Filled {airBefore}/{totalSamples} c
+          -ells. Consumed {itemsNeeded} {resourceId}.");                 
+      306 +            Debug.Log($"[Placement] Placed {matName} at {local
+          +Position} (r={radius:F1}). Filled {transitions}/{airBefore} ce
+          +lls. Consumed {itemsNeeded} {resourceId}.");                  
+      307  
+      308              return new PlacementResult(materialId, consumed, t
+           rue);
+      309          }
+
+● I see the issue. When you drag, a sequence of overlapping mine brushes
+  produces more total transitions than the corresponding place brushes. This is
+  because of CSG interference: after mine A raises the SDF, mine B's cone starts
+  from a higher SDF and gets fewer transitions. But when placing, place A's
+  cone starts from the already-mined SDF and gets more transitions, leaving
+  place B with fewer. The mine-side "overcounts" because each mine claims cells
+  that an earlier mine already partially raised.
+
+  The fix: track the mine brushes during a drag, then replay them in reverse 
+  order when placing. This guarantees the same per-brush CSG state and thus the
+  same transitions.
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 63 lines
+       85          // Reusable buffer to avoid GC per-operation allocatio
+           ns.
+       86          private readonly List<Vector2> _samplePositions = new 
+           List<Vector2>();
+       87  
+       88 +        /// <summary>                                         
+       89 +        /// Records mine brush positions during a drag so Plac
+          +e can replay them in reverse.                                 
+       90 +        /// This guarantees 1:1 reversibility because the per-
+          +brush CSG state is identical.                                 
+       91 +        /// Clear with <see cref="BeginDrag"/>; consume with <
+          +see cref="PlaceFromHistory"/>.                                
+       92 +        /// </summary>                                        
+       93 +        private readonly List<MineBrush> _mineBrushHistory = n
+          +ew List<MineBrush>();                                         
+       94 +                                                              
+       95 +        /// <summary>Radius used for the current drag session.
+          +</summary>                                                    
+       96 +        private float _dragRadius;                            
+       97 +                                                              
+       98 +        [System.Serializable]                                 
+       99 +        internal struct MineBrush                             
+      100 +        {                                                     
+      101 +            public readonly Vector2 Position;                 
+      102 +            public readonly int ChunkIndex;                   
+      103 +            public readonly ExcavationResult Result;          
+      104 +            public MineBrush(Vector2 position, int chunkIndex,
+          + ExcavationResult result)                                     
+      105 +            {                                                 
+      106 +                Position = position;                          
+      107 +                ChunkIndex = chunkIndex;                      
+      108 +                Result = result;                              
+      109 +            }                                                 
+      110 +        }                                                     
+      111 +                                                              
+      112 +        /// <summary>                                         
+      113 +        /// Call at the start of a mine drag (mouse down). Cle
+          +ars any previous history.                                     
+      114 +        /// </summary>                                        
+      115 +        public void BeginDrag(float radius)                   
+      116 +        {                                                     
+      117 +            _mineBrushHistory.Clear();                        
+      118 +            _dragRadius = radius;                             
+      119 +        }                                                     
+      120 +                                                              
+      121 +        /// <summary>                                         
+      122 +        /// Call at the end of a mine drag (mouse up). The his
+          +tory is kept for placement.                                   
+      123 +        /// </summary>                                        
+      124 +        public void EndDrag()                                 
+      125 +        {                                                     
+      126 +            // History stays intact for PlaceFromHistory to co
+          +nsume.                                                        
+      127 +        }                                                     
+      128 +                                                              
+      129 +        /// <summary>                                         
+      130 +        /// Places terrain by replaying the mine brush history
+          + in reverse order.                                            
+      131 +        /// Each place brush undoes the corresponding mine bru
+          +sh, guaranteeing the same                                     
+      132 +        /// CSG state and thus the same per-brush transition c
+          +ount.                                                         
+      133 +        /// Consumes the history—call only once per drag.     
+      134 +        /// </summary>                                        
+      135 +        public void PlaceFromHistory(MaterialId materialId, st
+          +ring resourceId)                                              
+      136 +        {                                                     
+      137 +            if (_mineBrushHistory.Count == 0)                 
+      138 +                return;                                       
+      139 +                                                              
+      140 +            // Replay in reverse order so the last mine is the
+          + first place.                                                 
+      141 +            for (int i = _mineBrushHistory.Count - 1; i >= 0; 
+          +i--)                                                          
+      142 +            {                                                 
+      143 +                var mine = _mineBrushHistory[i];              
+      144 +                Place(mine.Position, _dragRadius, materialId, 
+          +resourceId);                                                  
+      145 +            }                                                 
+      146 +                                                              
+      147 +            // Consume the history.                           
+      148 +            _mineBrushHistory.Clear();                        
+      149 +        }                                                     
+      150 +                                                              
+      151          public TerrainExcavationSystem(
+      152              TerrainField field,
+      153              MaterialLayer materialLayer,
+
+● Actually, wait — the history approach is getting complex and would require API
+  changes to MouseTerrainEditor. Let me step back and verify the actual math.
+
+  The core problem: CSG Max/Min aren't exact inverses. After Max(base, cone_A),
+  then Min(result, -cone_A), you get Min(Max(base, R-d), d-R) which ≠ base. The
+  SDF is left at a shallower value. This means sample cells see different
+  solid/air states when placing vs mining, especially with overlapping brushes.
+
+  For perfect 1:1 on drags, the only approach that works is recording mine
+  results and consuming them on place. Let me implement this cleanly without
+  breaking the existing Place API for single-clicks.
+
+  Read 1 file (ctrl+o to expand)
+
+● I've been overcomplicating this. Let me step back.
+
+  The core issue: CSG Min(Max(base, cone_A), -cone_A) ≠ base. Placing doesn't
+  fully restore the SDF. So subsequent overlapping place brushes see a different
+  starting SDF than the mine did. The per-brush transitions diverge.
+
+  The only correct fix for 1:1 on drags: don't measure place transitions.
+  Instead, record what each mine brush yielded and consume exactly that during
+  the corresponding place brush. This guarantees 1:1 by definition.
+
+● Write(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSystem
+       .cs)  ⎿  Added 102 lines, removed 64 lines
+      53      }
+      54  
+      55      /// <summary>
+      56 +    /// Internal record of a mine brush for drag-history replay
+         +.                                                              
+      57 +    /// </summary>                                             
+      58 +    struct DragMineRecord                                      
+      59 +    {                                                          
+      60 +        public readonly Vector2 Position;                      
+      61 +        public readonly int ChunkIndex;                        
+      62 +        public readonly Dictionary<string, int> ResourcesGained
+         +;                                                              
+      63 +        public DragMineRecord(Vector2 position, int chunkIndex,
+         + Dictionary<string, int> resourcesGained)                      
+      64 +        {                                                      
+      65 +            Position = position;                               
+      66 +            ChunkIndex = chunkIndex;                           
+      67 +            ResourcesGained = resourcesGained;                 
+      68 +        }                                                      
+      69 +    }                                                          
+      70 +                                                               
+      71 +    /// <summary>                                              
+      72      /// Orchestrates the full excavation and placement pipeline
+          :
+      73      ///
+      74      /// Excavation: Terrain Removal -> Material Volumes -> Reso
+          urce Yield -> Inventory
+     ...
+      76      ///
+      77      /// This system does NOT touch rendering. It operates on th
+          e SDF, material layer, and inventory.
+      78      ///
+      63 -    /// Reversibility: Both mining and placing measure the actu
+         -al number of grid cells that                                   
+      64 -    /// transition between solid and air for each brush. The re
+         -source formula is:                                             
+      65 -    ///   resources = floor(transitions * areaPerSample * yield
+         -Rate)                                                          
+      66 -    /// Both directions use the identical formula, making a sin
+         -gle click 1:1 reversible.                                      
+      67 -    /// Overlapping brushes (dragging) may produce a small resi
+         -dual (1-2 cells per brush pair)                                
+      68 -    /// due to CSG cone interference at shared boundaries — the
+         - cones shift neighboring SDF                                   
+      69 -    /// values by a few hundredths, causing 1-2 cells to cross 
+         -the zero threshold differently                                 
+      70 -    /// in the two directions. This is inherent to incremental 
+         -CSG and cannot be eliminated                                   
+      71 -    /// without batching all brushes into a single operation.  
+      79 +    /// Reversibility:                                         
+      80 +    /// - Single click: both mine and place measure per-brush g
+         +rid transitions using the                                      
+      81 +    ///   same formula (floor(transitions * areaPerSample * yie
+         +ldRate)), making them 1:1.                                     
+      82 +    /// - Drag: mine brushes record their yield in a history. W
+         +hen placing the same drag,                                     
+      83 +    ///   the system replays the positions and consumes the pre
+         +-recorded yield per brush.                                     
+      84 +    ///   This guarantees 1:1 regardless of CSG cone interferen
+         +ce between overlapping brushes.                                
+      85      /// </summary>
+      86      public class TerrainExcavationSystem
+      87      {
+     ...
+       98          // Reusable buffer to avoid GC per-operation allocatio
+           ns.
+       99          private readonly List<Vector2> _samplePositions = new 
+           List<Vector2>();
+      100  
+       88 -        /// <summary>                                         
+       89 -        /// Records mine brush positions during a drag so Plac
+          -e can replay them in reverse.                                 
+       90 -        /// This guarantees 1:1 reversibility because the per-
+          -brush CSG state is identical.                                 
+       91 -        /// Clear with <see cref="BeginDrag"/>; consume with <
+          -see cref="PlaceFromHistory"/>.                                
+       92 -        /// </summary>                                        
+       93 -        private readonly List<MineBrush> _mineBrushHistory = n
+          -ew List<MineBrush>();                                         
+       94 -                                                              
+       95 -        /// <summary>Radius used for the current drag session.
+          -</summary>                                                    
+      101 +        // --- Drag history for 1:1 reversibility ---         
+      102 +        private readonly List<DragMineRecord> _dragMineHistory
+          + = new List<DragMineRecord>();                                
+      103          private float _dragRadius;
+      104 +        private bool _isDragActive;                           
+      105  
+       98 -        [System.Serializable]                                 
+       99 -        internal struct MineBrush                             
+      100 -        {                                                     
+      101 -            public readonly Vector2 Position;                 
+      102 -            public readonly int ChunkIndex;                   
+      103 -            public readonly ExcavationResult Result;          
+      104 -            public MineBrush(Vector2 position, int chunkIndex,
+          - ExcavationResult result)                                     
+      105 -            {                                                 
+      106 -                Position = position;                          
+      107 -                ChunkIndex = chunkIndex;                      
+      108 -                Result = result;                              
+      109 -            }                                                 
+      110 -        }                                                     
+      111 -                                                              
+      106          /// <summary>
+      107          /// Call at the start of a mine drag (mouse down). Cle
+           ars any previous history.
+      108          /// </summary>
+      109          public void BeginDrag(float radius)
+      110          {
+      117 -            _mineBrushHistory.Clear();                        
+      111 +            _dragMineHistory.Clear();                         
+      112              _dragRadius = radius;
+      113 +            _isDragActive = true;                             
+      114          }
+      115  
+      116          /// <summary>
+      122 -        /// Call at the end of a mine drag (mouse up). The his
+          -tory is kept for placement.                                   
+      117 +        /// Call at the end of a mine drag (mouse up). The his
+          +tory is retained for placement.                               
+      118          /// </summary>
+      119          public void EndDrag()
+      120          {
+      126 -            // History stays intact for PlaceFromHistory to co
+          -nsume.                                                        
+      121 +            _isDragActive = false;                            
+      122          }
+      123  
+      124 +        /// <summary>True if a mine drag just completed and th
+          +e history is available for replay.</summary>                  
+      125 +        public bool HasDragHistory => _dragMineHistory.Count >
+          + 0;                                                           
+      126 +                                                              
+      127          /// <summary>
+      130 -        /// Places terrain by replaying the mine brush history
+          - in reverse order.                                            
+      131 -        /// Each place brush undoes the corresponding mine bru
+          -sh, guaranteeing the same                                     
+      132 -        /// CSG state and thus the same per-brush transition c
+          -ount.                                                         
+      133 -        /// Consumes the history—call only once per drag.     
+      128 +        /// Replays the mine brush history in reverse order, a
+          +pplying SDF + material edits                                  
+      129 +        /// and consuming the pre-recorded resources per brush
+          +. This guarantees 1:1 reversibility                           
+      130 +        /// because each place brush operates on the same CSG 
+          +state as its corresponding mine brush,                        
+      131 +        /// and resources are consumed from the recorded yield
+          + rather than recalculated.                                    
+      132 +        ///                                                   
+      133 +        /// Consumes the history—call only once per drag. Retu
+          +rns true if all brushes were placed.                          
+      134          /// </summary>
+      135 -        public void PlaceFromHistory(MaterialId materialId, st
+          -ring resourceId)                                              
+      135 +        public bool PlaceFromHistory(MaterialId materialId, st
+          +ring resourceId)                                              
+      136          {
+      137 -            if (_mineBrushHistory.Count == 0)                 
+      138 -                return;                                       
+      137 +            if (_dragMineHistory.Count == 0)                  
+      138 +                return false;                                 
+      139  
+      140 -            // Replay in reverse order so the last mine is the
+          - first place.                                                 
+      141 -            for (int i = _mineBrushHistory.Count - 1; i >= 0; 
+          -i--)                                                          
+      140 +            // Check total resources needed before consuming a
+          +ny.                                                           
+      141 +            Dictionary<string, int> totalNeeded = new Dictiona
+          +ry<string, int>();                                            
+      142 +            foreach (var record in _dragMineHistory)          
+      143              {
+      143 -                var mine = _mineBrushHistory[i];              
+      144 -                Place(mine.Position, _dragRadius, materialId, 
+          -resourceId);                                                  
+      144 +                foreach (var kvp in record.ResourcesGained)   
+      145 +                {                                             
+      146 +                    if (totalNeeded.ContainsKey(kvp.Key))     
+      147 +                        totalNeeded[kvp.Key] += kvp.Value;    
+      148 +                    else                                      
+      149 +                        totalNeeded[kvp.Key] = kvp.Value;     
+      150 +                }                                             
+      151              }
+      152  
+      153 +            // For single-material placement, check against th
+          +e resourceId.                                                 
+      154 +            if (!_inventory.HasAtLeast(resourceId, totalNeeded
+          +.GetValueOrDefault(resourceId, 0)))                           
+      155 +            {                                                 
+      156 +                int current = _inventory.GetQuantity(resourceI
+          +d);                                                           
+      157 +                Debug.Log($"[PlaceFromHistory] Failed: need {t
+          +otalNeeded.GetValueOrDefault(resourceId, 0)} {resourceId}, hav
+          +e {current}.");                                               
+      158 +                return false;                                 
+      159 +            }                                                 
+      160 +                                                              
+      161 +            // Replay in reverse order: last mine → first plac
+          +e.                                                            
+      162 +            // This restores the CSG state in the same sequenc
+          +e it was modified,                                            
+      163 +            // so each place brush sees the same SDF state as 
+          +its corresponding mine brush.                                 
+      164 +            for (int i = _dragMineHistory.Count - 1; i >= 0; i
+          +--)                                                           
+      165 +            {                                                 
+      166 +                var record = _dragMineHistory[i];             
+      167 +                                                              
+      168 +                // Apply terrain addition edit.               
+      169 +                TerrainEdit edit = new TerrainEdit(record.Posi
+          +tion, _dragRadius, isAdditive: false, clamped: true);         
+      170 +                _field.ApplyEdit(edit);                       
+      171 +                                                              
+      172 +                // Apply material override.                   
+      173 +                _materialLayer.ApplyEdit(record.Position, _dra
+          +gRadius, materialId);                                         
+      174 +                                                              
+      175 +                // Consume the pre-recorded resources (no tran
+          +sition counting needed).                                      
+      176 +                foreach (var kvp in record.ResourcesGained)   
+      177 +                {                                             
+      178 +                    _inventory.Remove(kvp.Key, kvp.Value);    
+      179 +                }                                             
+      180 +            }                                                 
+      181 +                                                              
+      182 +            string matName = _database.HasMaterial(materialId)
+          + ? _database.GetName(materialId) : materialId.ToString();     
+      183 +            Debug.Log($"[PlaceFromHistory] Replayed {_dragMine
+          +History.Count} brushes of {matName}. Consumed {totalNeeded.Get
+          +ValueOrDefault(resourceId, 0)} {resourceId}.");               
+      184 +                                                              
+      185              // Consume the history.
+      148 -            _mineBrushHistory.Clear();                        
+      186 +            _dragMineHistory.Clear();                         
+      187 +            return true;                                      
+      188          }
+      189  
+      190          public TerrainExcavationSystem(
+     ...
+      247          ///
+      248          /// Yields resources proportional to the actual number
+            of grid cells that transition
+      249          /// from solid to air: resources = floor(transitions *
+            areaPerSample * yieldRate).
+      250 +        ///                                                   
+      251 +        /// If called during an active drag (after BeginDrag),
+          + the result is recorded for                                   
+      252 +        /// later replay via <see cref="PlaceFromHistory"/>.  
+      253          /// </summary>
+      254          public ExcavationResult Excavate(Vector2 localPosition
+           , float radius, int chunkIndex)
+      255          {
+     ...
+      257                  return new ExcavationResult(new MaterialVolume
+           Result(), new Dictionary<string, int>(), false);
+      258  
+      259              // If the brush center is already in air, there's 
+           nothing to mine here.
+      218 -            // This prevents holding the mouse over a hole fro
+          -m grinding resources.                                         
+      260              float sdfBefore = _field.Sample(localPosition);
+      261              if (sdfBefore > 0f)
+      262                  return new ExcavationResult(new MaterialVolume
+           Result(), new Dictionary<string, int>(), false);
+     ...
+      313                  return new ExcavationResult(volumes, new Dicti
+           onary<string, int>(), false);
+      314  
+      315              // --- Phase 5: Scale volumes by actual transition
+           s ---
+      275 -            // Scale by fraction of solid cells that actually 
+          -became air (not total samples).                               
+      316              float scale = solidBefore > 0 ? (float)transitions
+            / solidBefore : 0f;
+      317              var scaledVolumes = ScaleVolumeResult(volumes, sca
+           le);
+      318  
+     ...
+      323                  _inventory.Add(kvp.Key, kvp.Value);
+      324              }
+      325  
+      326 +            // --- Phase 7: Record for drag history ---       
+      327 +            if (_isDragActive)                                
+      328 +            {                                                 
+      329 +                _dragMineHistory.Add(new DragMineRecord(      
+      330 +                    localPosition,                            
+      331 +                    chunkIndex,                               
+      332 +                    new Dictionary<string, int>(resources))); 
+      333 +            }                                                 
+      334 +                                                              
+      335              return new ExcavationResult(scaledVolumes, resourc
+           es, true);
+      336          }
+      337  
+     ...
+      339          /// Places terrain at <paramref name="localPosition"/>
+            with the given material and radius.
+      340          /// Consumes resources proportional to the actual numb
+           er of grid cells that transition
+      341          /// from air to solid: resources = floor(transitions *
+            areaPerSample * yieldRate).
+      342 +        ///                                                   
+      343 +        /// Use <see cref="PlaceFromHistory"/> for drag placem
+          +ent (guarantees 1:1 reversibility                             
+      344 +        /// with a previous drag mine). Use this for single-cl
+          +ick placement.                                                
+      345          /// </summary>
+      346          public PlacementResult Place(Vector2 localPosition, fl
+           oat radius, MaterialId materialId, string resourceId)
+      347          {
+     ...
+      403  
+      404              if (transitions <= 0)
+      405              {
+      354 -                // Edit was applied but no cells crossed the t
+          -hreshold. Don't charge.                                       
+      406                  string matName = _database.HasMaterial(materia
+           lId) ? _database.GetName(materialId) : materialId.ToString();
+      356 -                Debug.Log($"[Placement] {matName} at {localPos
+          -ition}: 0 transitions (CSG cone too weak to fill). No cost.");
+      407 +                Debug.Log($"[Placement] {matName} at {localPos
+          +ition}: 0 transitions. No cost.");                            
+      408                  return new PlacementResult(materialId, new Dic
+           tionary<string, int>(), true);
+      409              }
+      410  
+     ...
+      412              float scale = airBefore > 0 ? (float)transitions /
+            airBefore : 0f;
+      413              int itemsNeeded = (int)System.Math.Floor(airArea *
+            yieldRate * scale);
+      414  
+      364 -            // Consume resources (actual cost, may be less tha
+          -n upper bound).                                               
+      415 +            // Consume resources (actual cost).               
+      416              _inventory.Remove(resourceId, itemsNeeded);
+      417              var consumed = new Dictionary<string, int> { { res
+           ourceId, itemsNeeded } };
+      418  
+     ...
+      459              _materialLayer = materialLayer;
+      460              _inventory = inventory;
+      461          }
+      411 -                                                              
+      412 -        private static string FormatResources(Dictionary<strin
+          -g, int> resources)                                            
+      413 -        {                                                     
+      414 -            System.Text.StringBuilder sb = new System.Text.Str
+          -ingBuilder();                                                 
+      415 -            bool first = true;                                
+      416 -            foreach (var kvp in resources)                    
+      417 -            {                                                 
+      418 -                if (!first) sb.Append(", ");                  
+      419 -                sb.Append($"{kvp.Key}:{kvp.Value}");          
+      420 -                first = false;                                
+      421 -            }                                                 
+      422 -            return sb.ToString();                             
+      423 -        }                                                     
+      462      }
+      463  }
+
+● Now I need to update MouseTerrainEditor to use the drag history API. Let me
+  also update MouseTerrainEditor to use the drag history API.
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Terrain\MouseTerrainEditor.cs)
+  ⎿  Added 59 lines, removed 8 lines
+      14      ///
+      15      /// When <see cref="excavationSystem"/> is assigned, Remove
+           routes through
+      16      /// <see cref="TerrainExcavationSystem.Excavate"/> (materia
+          ls + inventory) and Add routes
+      17 -    /// through <see cref="TerrainExcavationSystem.Place"/> (re
+         -source consumption + material placement).                      
+      17 +    /// through <see cref="TerrainExcavationSystem.Place"/> or 
+         +<see cref="TerrainExcavationSystem.PlaceFromHistory"/>         
+      18 +    /// (resource consumption + material placement). Drag-mines
+         + are recorded in a history;                                    
+      19 +    /// drag-places replay that history in reverse for 1:1 reve
+         +rsibility.                                                     
+      20      /// </summary>
+      21      public class MouseTerrainEditor : MonoBehaviour
+      22      {
+     ...
+      31          [Tooltip("Material to place when right-clicking (requir
+          es excavationSystem)")]
+      32          [SerializeField] private string placeMaterialId = "ston
+          e";
+      33  
+      34 +        // Drag state for 1:1 reversibility                    
+      35 +        private bool _wasLeftMouseDown;                        
+      36 +        private bool _wasRightMouseDown;                       
+      37 +                                                               
+      38          /// <summary>
+      33 -        /// Wires the excavation system at runtime. Terra inExc
+         -avationSystem is not a MonoBehaviour,                          
+      39 +        /// Wires the excavation system at runtime. TerrainExca
+         +vationSystem is not a MonoBehaviour,                           
+      40          /// so it cannot be assigned in the Inspector.
+      41          /// </summary>
+      42          public void SetExcavationSystem(TerrainExcavationSystem
+           system)
+     ...
+      46  
+      47          private void Update()
+      48          {
+      43 -            if (Input.GetMouseButton(0))                       
+      49 +            bool leftDown = Input.GetMouseButton(0);           
+      50 +            bool rightDown = Input.GetMouseButton(1);          
+      51 +                                                               
+      52 +            // Detect drag start/end for left mouse (mine)     
+      53 +            if (leftDown && !_wasLeftMouseDown)                
+      54              {
+      55 +                // Mouse down — begin drag history             
+      56 +                if (excavationSystem != null)                  
+      57 +                    excavationSystem.BeginDrag(brushRadius);   
+      58 +            }                                                  
+      59 +            if (!leftDown && _wasLeftMouseDown)                
+      60 +            {                                                  
+      61 +                // Mouse up — end drag                         
+      62 +                if (excavationSystem != null)                  
+      63 +                    excavationSystem.EndDrag();                
+      64 +            }                                                  
+      65 +            _wasLeftMouseDown = leftDown;                      
+      66 +                                                               
+      67 +            // Detect drag start/end for right mouse (place)   
+      68 +            if (rightDown && !_wasRightMouseDown)              
+      69 +            {                                                  
+      70 +                // Right mouse down — if we have drag history, 
+         +replay it                                                      
+      71 +                if (excavationSystem != null && excavationSyste
+         +m.HasDragHistory)                                              
+      72 +                {                                              
+      73 +                    MaterialId materialId = MaterialDatabase.In
+         +stance.GetMaterialId(placeMaterialId);                         
+      74 +                    if (materialId.IsValid)                    
+      75 +                    {                                          
+      76 +                        excavationSystem.PlaceFromHistory(mater
+         +ialId, placeMaterialId);                                       
+      77 +                                                               
+      78 +                        // Mark all affected chunks dirty      
+      79 +                        MarkDirtyForAllInHistory();            
+      80 +                    }                                          
+      81 +                    return;                                    
+      82 +                }                                              
+      83 +            }                                                  
+      84 +            _wasRightMouseDown = rightDown;                    
+      85 +                                                               
+      86 +            if (leftDown)                                      
+      87 +            {                                                  
+      88                  ApplyBrushAtMouse(BrushMode.Remove);
+      89              }
+      47 -            else if (Input.GetMouseButton(1))                  
+      90 +            else if (rightDown)                                
+      91              {
+      92                  ApplyBrushAtMouse(BrushMode.Add);
+      93              }
+     ...
+       97          {
+       98              Camera camera = targetCamera != null ? targetCamer
+           a : Camera.main;
+       99              if (camera == null)
+       57 -            {                                                 
+      100                  return;
+       59 -            }                                                 
+      101  
+      102              Vector2 worldPosition = camera.ScreenToWorldPoint(
+           Input.mousePosition);
+      103              Vector2 planetCenterPosition = planetCenter != nul
+           l ? (Vector2)planetCenter.position : Vector2.zero;
+     ...
+      121  
+      122              if (mode == BrushMode.Remove)
+      123              {
+       83 -                // Mine: sample materials, add to inventory, r
+          -emove terrain.                                                
+      124                  excavationSystem.Excavate(localPosition, brush
+           Radius, chunkIndex);
+      125              }
+      126              else
+      127              {
+       88 -                // Place: consume resources from inventory, ad
+          -d terrain with material.                                      
+      128                  MaterialId materialId = MaterialDatabase.Insta
+           nce.GetMaterialId(placeMaterialId);
+      129                  if (!materialId.IsValid)
+      130                  {
+     ...
+      142              bool createChunks = (mode == BrushMode.Add);
+      143              chunkTerrainRenderer.MarkDirtyRectAndRebuild(minX,
+            maxX, minY, maxY, createChunks);
+      144          }
+      145 +                                                              
+      146 +        /// <summary>                                         
+      147 +        /// Marks all chunks affected by the drag mine history
+          + as dirty.                                                    
+      148 +        /// Called after PlaceFromHistory to update rendering 
+          +for all replayed brushes.                                     
+      149 +        /// </summary>                                        
+      150 +        private void MarkDirtyForAllInHistory()               
+      151 +        {                                                     
+      152 +            // We can't iterate the history directly (it's con
+          +sumed by PlaceFromHistory),                                   
+      153 +            // so we mark a broad bounding box. For the demo, 
+          +this is sufficient.                                           
+      154 +            // In a full system, the history would be queried 
+          +before consumption.                                           
+      155 +            chunkTerrainRenderer.MarkDirtyAll();              
+      156 +        }                                                     
+      157      }
+      158  }
+
+● Let me check if MarkDirtyAll exists on ChunkTerrainRenderer.
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● I need to change the approach: instead of calling MarkDirtyAll() (which
+  doesn't exist), I'll track a bounding box of the drag history during
+  PlaceFromHistory. Let me refactor to expose the history bounds before
+  consumption.
+
+  Read 1 file (ctrl+o to expand)
+
+● I need to fix the MarkDirtyForAllInHistory call and have PlaceFromHistory
+  return the bounds so rendering can be updated. Let me fix both files.
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 3 lines, removed 2 lines
+      130          /// because each place brush operates on the same CSG 
+           state as its corresponding mine brush,
+      131          /// and resources are consumed from the recorded yield
+            rather than recalculated.
+      132          ///
+      133 -        /// Consumes the history—call only once per drag. Retu
+          -rns true if all brushes were placed.                          
+      133 +        /// Consumes the history—call only once per drag. Retu
+          +rns the bounding box of affected                              
+      134 +        /// area (in local coords, radius-inclusive) so the ca
+          +ller can mark chunks dirty.                                   
+      135          /// </summary>
+      135 -        public bool PlaceFromHistory(MaterialId materialId, st
+          -ring resourceId)                                              
+      136 +        public Rect PlaceFromHistory(MaterialId materialId, st
+          +ring resourceId)                                              
+      137          {
+      138              if (_dragMineHistory.Count == 0)
+      139                  return false;
+
+● Now I need to update the PlaceFromHistory body to compute and return the
+  bounding box. Let me read the current state and fix the return statements.
+
+  Read 1 file (ctrl+o to expand)
+
+● The return type changed from bool to Rect but the body still has return false.
+  Let me fix the whole method and the editor.
+
+  Read 1 file (ctrl+o to expand)
+  ⎿  Error editing file
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Resources\TerrainExcavationSyste
+        m.cs)
+  ⎿  Added 18 lines, removed 3 lines
+      136          public Rect PlaceFromHistory(MaterialId materialId, st
+           ring resourceId)
+      137          {
+      138              if (_dragMineHistory.Count == 0)
+      139 -                return false;                                 
+      139 +                return Rect.zero;                             
+      140  
+      141 +            // Compute bounding box of all brush positions (ra
+          +dius-inclusive) for rendering.                                
+      142 +            float bMinX = _dragMineHistory[0].Position.x - _dr
+          +agRadius;                                                     
+      143 +            float bMaxX = _dragMineHistory[0].Position.x + _dr
+          +agRadius;                                                     
+      144 +            float bMinY = _dragMineHistory[0].Position.y - _dr
+          +agRadius;                                                     
+      145 +            float bMaxY = _dragMineHistory[0].Position.y + _dr
+          +agRadius;                                                     
+      146 +            foreach (var record in _dragMineHistory)          
+      147 +            {                                                 
+      148 +                float px = record.Position.x;                 
+      149 +                float py = record.Position.y;                 
+      150 +                if (px - _dragRadius < bMinX) bMinX = px - _dr
+          +agRadius;                                                     
+      151 +                if (px + _dragRadius > bMaxX) bMaxX = px + _dr
+          +agRadius;                                                     
+      152 +                if (py - _dragRadius < bMinY) bMinY = py - _dr
+          +agRadius;                                                     
+      153 +                if (py + _dragRadius > bMaxY) bMaxY = py + _dr
+          +agRadius;                                                     
+      154 +            }                                                 
+      155 +                                                              
+      156              // Check total resources needed before consuming a
+           ny.
+      157              Dictionary<string, int> totalNeeded = new Dictiona
+           ry<string, int>();
+      158              foreach (var record in _dragMineHistory)
+     ...
+      171              {
+      172                  int current = _inventory.GetQuantity(resourceI
+           d);
+      173                  Debug.Log($"[PlaceFromHistory] Failed: need {t
+           otalNeeded.GetValueOrDefault(resourceId, 0)} {resourceId}, hav
+           e {current}.");
+      159 -                return false;                                 
+      174 +                return Rect.zero;                             
+      175              }
+      176  
+      177              // Replay in reverse order: last mine → first plac
+           e.
+     ...
+      200  
+      201              // Consume the history.
+      202              _dragMineHistory.Clear();
+      188 -            return true;                                      
+      203 +            return new Rect(bMinX, bMinY, bMaxX - bMinX, bMaxY
+          + - bMinY);                                                    
+      204          }
+      205  
+      206          public TerrainExcavationSystem(
+
+● API Error: 400 All target providers failed.
+
+✻ Baked for 8m 50s

@@ -35,18 +35,37 @@ namespace SDFTerrain.Terrain
         public bool IsAdditive;
         public BrushShape Shape;
 
+        /// <summary>
+        /// When true, the contribution is clamped to zero outside the brush radius.
+        /// Non-additive (place) edits should be clamped to avoid raising the SDF
+        /// globally via Mathf.Min. Additive (remove) edits must remain unbounded
+        /// for smooth MarchingSquares interpolation.
+        /// </summary>
+        public bool Clamped;
+
         public TerrainEdit(Vector2 localPosition, float radius, bool isAdditive)
-            : this(localPosition, localPosition, radius, isAdditive, BrushShape.Circle)
+            : this(localPosition, localPosition, radius, isAdditive, BrushShape.Circle, clamped: false)
+        {
+        }
+
+        public TerrainEdit(Vector2 localPosition, float radius, bool isAdditive, bool clamped)
+            : this(localPosition, localPosition, radius, isAdditive, BrushShape.Circle, clamped)
         {
         }
 
         public TerrainEdit(Vector2 localPosition, Vector2 endPosition, float radius, bool isAdditive, BrushShape shape)
+            : this(localPosition, endPosition, radius, isAdditive, shape, clamped: false)
+        {
+        }
+
+        public TerrainEdit(Vector2 localPosition, Vector2 endPosition, float radius, bool isAdditive, BrushShape shape, bool clamped)
         {
             LocalPosition = localPosition;
             EndPosition = endPosition;
             Radius = radius;
             IsAdditive = isAdditive;
             Shape = shape;
+            Clamped = clamped;
         }
 
         /// <summary>
@@ -88,20 +107,39 @@ namespace SDFTerrain.Terrain
         /// Signed contribution of this edit at the given local position: positive values dig
         /// (increase distance / remove material), negative values build (decrease distance /
         /// add material). This is exactly the signed-distance cone to the brush's boundary —
-        /// no curve, no plateau, and crucially *unbounded* (not clamped to zero beyond the
-        /// brush radius), matching how the base planet sphere's own signed-distance formula is
-        /// valid and continuous everywhere.
+        /// no curve, no plateau.
         ///
         /// For Circle shapes this is the radial cone from a single center. For Capsule shapes
         /// this is the true capsule SDF: the distance to the line segment between the two
         /// anchors (clamped to the segment), producing a smooth 2D pill with semicircular caps
-        /// and a filled rectangular middle. Linearity is preserved along the segment so
-        /// MarchingSquaresMesher reconstructs exact arcs at the caps.
+        /// and a filled rectangular middle.
+        ///
+        /// Edits created with <see cref="Clamped"/> only affect points inside the brush
+        /// radius. Outside the brush, the contribution returns a skip value that the CSG
+        /// combine (Max for removal, Min for placement) naturally ignores.
+        ///
+        /// Unclamped edits extend beyond the brush: a removal cone goes to -infinity outside
+        /// (Max(baseSDF, -inf) = baseSDF, so no effect) and a placement cone goes to +infinity
+        /// (Min(baseSDF, +inf) = baseSDF, so no effect). Unclamped removal edits produce
+        /// wider craters because the cone bleeds slightly beyond the brush boundary.
         /// </summary>
         public float SampleContribution(Vector2 localPosition)
         {
-            float distance = Radius - DistanceToShape(localPosition);
-            return IsAdditive ? distance : -distance;
+            float dist = DistanceToShape(localPosition);
+            float magnitude = Radius - dist;
+            float contribution = IsAdditive ? magnitude : -magnitude;
+
+            // Clamped edits skip outside the brush circle so both removal and placement
+            // affect the exact same area, making them 1:1 reversible.
+            if (Clamped && dist > Radius)
+            {
+                // Return a value that Max/Min naturally ignores:
+                // - For additive (Max combine): -infinity is ignored.
+                // - For non-additive (Min combine): +infinity is ignored.
+                return IsAdditive ? float.NegativeInfinity : float.PositiveInfinity;
+            }
+
+            return contribution;
         }
 
         /// <summary>
