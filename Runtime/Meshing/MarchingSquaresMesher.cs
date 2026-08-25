@@ -266,9 +266,23 @@ namespace SDFTerrain.Meshing
         /// Interpolates color along an edge crossing using the same linear factor as
         /// <see cref="Interp(Vector2,Vector2,float,float)"/> so vertex colors blend smoothly
         /// across the contour between grid corners.
+        /// <para>
+        /// When the edge straddles the air/solid boundary (one corner is air, the other is solid),
+        /// the contour vertex uses the solid side's color. This prevents the air material color
+        /// (typically white) from bleeding into the terrain surface and creating a washed-out rim.
+        /// </para>
         /// </summary>
         private static Color Interp(Color a, Color b, float valueA, float valueB)
         {
+            // At the air/solid boundary, prefer the solid side's color.
+            bool aIsSolid = valueA < 0f;
+            bool bIsSolid = valueB < 0f;
+            if (aIsSolid != bIsSolid)
+            {
+                return aIsSolid ? a : b;
+            }
+
+            // Both corners are on the same side — blend normally for interior contours.
             float denominator = valueA - valueB;
             if (Mathf.Approximately(denominator, 0f))
             {
@@ -283,34 +297,33 @@ namespace SDFTerrain.Meshing
             Vector2 a, Vector2 b, Vector2 c,
             Color ca, Color cb, Color cc)
         {
-            meshData.AddTriangle(a, b, c, uvScale, ca);
+            meshData.AddTriangle(a, b, c, uvScale, ca, cb, cc);
         }
 
         private static void AddQuad(MeshData meshData, float uvScale,
             Vector2 a, Vector2 b, Vector2 c, Vector2 d,
             Color ca, Color cb, Color cc, Color cd)
         {
-            meshData.AddTriangle(a, b, c, uvScale, ca);
-            meshData.AddTriangle(a, c, d, uvScale, cd);
+            meshData.AddQuad(a, b, c, d, uvScale, ca, cb, cc, cd);
         }
 
         private static void AddPentagon(MeshData meshData, float uvScale,
             Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 e,
             Color ca, Color cb, Color cc, Color cd, Color ce)
         {
-            meshData.AddTriangle(a, b, c, uvScale, ca);
-            meshData.AddTriangle(a, c, d, uvScale, cc);
-            meshData.AddTriangle(a, d, e, uvScale, cd);
+            meshData.AddTriangle(a, b, c, uvScale, ca, cb, cc);
+            meshData.AddTriangle(a, c, d, uvScale, ca, cc, cd);
+            meshData.AddTriangle(a, d, e, uvScale, ca, cd, ce);
         }
 
         private static void AddHexagon(MeshData meshData, float uvScale,
             Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 e, Vector2 f,
             Color ca, Color cb, Color cc, Color cd, Color ce, Color cf)
         {
-            meshData.AddTriangle(a, b, c, uvScale, ca);
-            meshData.AddTriangle(a, c, d, uvScale, cc);
-            meshData.AddTriangle(a, d, e, uvScale, cd);
-            meshData.AddTriangle(a, e, f, uvScale, ce);
+            meshData.AddTriangle(a, b, c, uvScale, ca, cb, cc);
+            meshData.AddTriangle(a, c, d, uvScale, ca, cc, cd);
+            meshData.AddTriangle(a, d, e, uvScale, ca, cd, ce);
+            meshData.AddTriangle(a, e, f, uvScale, ca, ce, cf);
         }
 
         /// <summary>

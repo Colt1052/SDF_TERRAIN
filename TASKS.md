@@ -103,6 +103,34 @@ Store terrain edit history. Support undo/redo.
 Generate layered composition (soil → stone → mantle) based on depth, heat, pressure, noise.
 Wire geological profile to ChunkTerrainRenderer for vertex-color rendering. Create playable demo scene.
 
+### Shader fixes (2026-08-24)
+- **LightMode mismatch**: `TerrainVertexColor.shader` declared `LightMode = "UniversalForward"` (URP 3D).
+  The project uses URP 2D, so the draw call was never dispatched. Fixed → `"Universal2D"`.
+- **Per-vertex color loss**: `MarchingSquaresMesher` helpers (`AddTriangle`, `AddQuad`, etc.) computed
+  per-corner colors but passed only the first color to `MeshData.AddTriangle()`, so the whole shape
+  rendered a single color. Added per-vertex overloads to `MeshData` and wired helpers through them.
+  (Vertex-color approach abandoned in favor of fragment shader — see below.)
+- **Fragment-shader geological rendering**: Vertex colors can't show interior layers because the
+  mesher fills the solid region with triangles whose vertices are at grid-point positions — the
+  interior vertices all have the same layer color as their grid corner. Replaced with fragment-shader
+  approach: pass `posOS` to fragment, compute `depth = radius - length(posOS)`, select layer color
+  at each pixel. This produces correct concentric shells visible in 2D cross-section.
+- **Noise-based layer boundaries**: Added 3-octave FBM (2D value noise via sin hash + Hermite interp)
+  to perturb depth in the fragment shader. Layer boundaries are now organic/wavy instead of circular.
+  Shader properties: `_PlanetRadius`, `_NoiseAmplitude` (2.0), `_NoiseFrequency` (0.15), plus layer
+  colors and tint. Thresholds match `GeologicalProfile.EarthLike()` (dirt: 0-3, stone: 3-15, deep
+  stone: 15-30, mantle: 30+).
+
+### Lessons learned
+- **URP 2D requires `LightMode = "Universal2D"`** — `"UniversalForward"` silently renders nothing.
+- **Vertex colors on filled meshes only color what's at the vertices** — can't show gradients through
+  interior geometry that the mesher didn't place vertices at. Fragment-space computation from position
+  is the correct approach for depth-based coloring of filled regions.
+- **Chunk GameObjects share the planet's transform** — `posOS` in the shader is planet-relative, not
+  chunk-relative. Fragment `length(posOS)` works for concentric shells.
+- **HLSL hash portability**: `sin(dot(p, constant))` formula works; integer-based hash (multiply +
+  dot) can silently break on some DX11 configurations.
+
 ---
 
 ## 20. Ore generation

@@ -50,5 +50,59 @@ namespace SDFTerrain.Meshing
 
             return index;
         }
+
+        /// <summary>
+        /// Like <see cref="GetOrAddVertex(Vector2,float,Color)"/> but returns both the index
+        /// and whether the vertex was newly added (true) or already existed (false). When a
+        /// vertex already exists, its previously assigned color is kept — first assignment wins.
+        /// </summary>
+        private int GetOrAddVertex(Vector2 position, float uvScale, Color color, out bool isNew)
+        {
+            if (_vertexIndices.TryGetValue(position, out int existingIndex))
+            {
+                isNew = false;
+                return existingIndex;
+            }
+
+            int index = Vertices.Count;
+            Vertices.Add(new Vector3(position.x, position.y, 0f));
+            Normals.Add(Vector3.back);
+            UVs.Add(position * uvScale);
+            Colors.Add(color);
+            _vertexIndices[position] = index;
+            isNew = true;
+
+            return index;
+        }
+
+        /// <summary>
+        /// Adds a triangle with per-vertex colors. Each vertex is deduplicated by position;
+        /// the color is applied only when the vertex is newly created (first assignment wins).
+        /// Winding is reversed so triangles face the 2D camera.
+        /// </summary>
+        public void AddTriangle(Vector2 a, Vector2 b, Vector2 c, float uvScale,
+            Color ca, Color cb, Color cc)
+        {
+            Triangles.Add(GetOrAddVertex(a, uvScale, ca));
+            Triangles.Add(GetOrAddVertex(c, uvScale, cc));
+            Triangles.Add(GetOrAddVertex(b, uvScale, cb));
+        }
+
+        /// <summary>
+        /// Adds a quad split into two triangles with per-vertex colors.
+        /// Winding is reversed so triangles face the 2D camera.
+        /// </summary>
+        public void AddQuad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, float uvScale,
+            Color ca, Color cb, Color cc, Color cd)
+        {
+            // Triangle 1: a, b, c → reversed: a, c, b
+            Triangles.Add(GetOrAddVertex(a, uvScale, ca));
+            Triangles.Add(GetOrAddVertex(c, uvScale, cc));
+            Triangles.Add(GetOrAddVertex(b, uvScale, cb));
+            // Triangle 2: a, c, d → reversed: a, d, c
+            Triangles.Add(GetOrAddVertex(a, uvScale, ca));
+            Triangles.Add(GetOrAddVertex(d, uvScale, cd));
+            Triangles.Add(GetOrAddVertex(c, uvScale, cc));
+        }
     }
 }

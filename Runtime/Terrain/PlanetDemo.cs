@@ -41,7 +41,10 @@ namespace SDFTerrain.Terrain
             var shader = Shader.Find("SDFTerrain/VertexColor");
             if (shader != null)
             {
-                renderer.SetMaterial(new Material(shader));
+                Material mat = new Material(shader);
+                // Pass planet radius so the shader can compute depth from center.
+                mat.SetFloat("_PlanetRadius", radius);
+                renderer.SetMaterial(mat);
             }
             else
             {
