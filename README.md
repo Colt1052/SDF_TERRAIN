@@ -74,6 +74,7 @@ Each layer only depends on layers below it.
 | `MarchingSquaresMesher` | `Runtime/Meshing/MarchingSquaresMesher.cs` | Convert sample grid to MeshData (vertices/tris). |
 | `ColliderContourBuilder` | `Runtime/Meshing/ColliderContourBuilder.cs` | Extract closed boundary loops from MeshData. |
 | `TerrainBrush` | `Runtime/Terrain/TerrainBrush.cs` | Immutable struct: mode (Add/Remove/Smooth), radius. |
+| `BrushShape` | `Runtime/Terrain/TerrainEdit.cs` | Enum: Circle, Capsule — shape primitive for brush edits. |
 | `TerrainNoise` | `Runtime/Terrain/TerrainNoise.cs` | Sine-harmonic noise for terrain surface variation. |
 | `PlanetGenerator` | `Runtime/Terrain/PlanetGenerator.cs` | Entry point: radius + seed + noise → TerrainField. |
 | `Planet` | `Runtime/Planet/Planet.cs` | MonoBehaviour: radius, seed, gravity, settings ref. |
@@ -90,6 +91,10 @@ Each layer only depends on layers below it.
 
 - **Square Cartesian chunks** on a grid centered on planet origin. No wedge masks, no seam logic.
 - **Brush edits are pure SDF cones**: `Radius - distanceFromBrush`, no strength parameter.
+- **Brush edits use shape primitives**: `BrushShape` enum (Circle, Capsule) controls edit geometry.
+  Capsule strokes are the union of two circles — `Radius - min(dist(start), dist(end))` — forming
+  a 2D pill between the previous and current mouse position during a drag. Extensible for future
+  brush shapes (rectangle, diamond, etc.).
 - **CSG composition**: digs use `Mathf.Max`, builds use `Mathf.Min` — idempotent, no melting.
 - **Chunk-indexed spatial index**: each edit mapped to overlapping chunks at apply time. Sampling scans only local edits.
 - **Packed `(col, row)` keys** for edit indexing — edits registered even when no chunk exists.

@@ -254,7 +254,9 @@ namespace SDFTerrain.Terrain
             {
                 TerrainEdit edit = _edits[i];
 
-                float distanceFromBrush = Vector2.Distance(localPosition, edit.LocalPosition);
+                // Distance to the shape (circle center or capsule segment).
+                float distanceFromBrush = edit.DistanceToShape(localPosition);
+
                 if (distanceFromBrush >= radius)
                 {
                     continue;
@@ -282,13 +284,11 @@ namespace SDFTerrain.Terrain
         private void IndexEdit(int editIndex, TerrainEdit edit)
         {
             // Rectangular overlap test: find all chunks whose bounding box overlaps the
-            // brush's circular footprint. This is conservative (a circular brush inside a
-            // square rect may touch slightly more chunks than necessary), but it is fast,
+            // edit's footprint. This is conservative (a circular or capsule footprint inside
+            // a square rect may touch slightly more chunks than necessary), but it is fast,
             // correct, and never misses an affected chunk.
-            float brushMinX = edit.LocalPosition.x - edit.Radius;
-            float brushMaxX = edit.LocalPosition.x + edit.Radius;
-            float brushMinY = edit.LocalPosition.y - edit.Radius;
-            float brushMaxY = edit.LocalPosition.y + edit.Radius;
+            edit.GetBoundingBox(out float brushMinX, out float brushMaxX,
+                out float brushMinY, out float brushMaxY);
 
             float chunkSize = _chunkGrid.ChunkSize;
             float gridMinX = -(_chunkGrid.Cols * chunkSize) / 2f;

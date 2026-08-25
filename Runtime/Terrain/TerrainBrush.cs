@@ -29,6 +29,17 @@ namespace SDFTerrain.Terrain
         /// <remarks>Throws for <see cref="BrushMode.Smooth"/> — smooth operates via <see cref="TerrainField.SmoothEdits"/>, not <see cref="TerrainEdit"/>.</remarks>
         public TerrainEdit ToEdit(Vector2 localPosition)
         {
+            return ToEdit(localPosition, localPosition);
+        }
+
+        /// <summary>
+        /// Builds the persisted edit this brush stroke produces as a capsule between
+        /// <paramref name="localPosition"/> and <paramref name="endPosition"/>.
+        /// When both positions are equal, the result is a circle (degenerate capsule).
+        /// </summary>
+        /// <remarks>Throws for <see cref="BrushMode.Smooth"/> — smooth operates via <see cref="TerrainField.SmoothEdits"/>.</remarks>
+        public TerrainEdit ToEdit(Vector2 localPosition, Vector2 endPosition)
+        {
             if (Mode == BrushMode.Smooth)
             {
                 throw new InvalidOperationException("Smooth mode does not produce a TerrainEdit; use TerrainField.SmoothEdits instead.");
@@ -36,7 +47,13 @@ namespace SDFTerrain.Terrain
 
             // Remove and Electric both carve terrain (additive = dig).
             bool isAdditive = Mode == BrushMode.Remove || Mode == BrushMode.Electric;
-            return new TerrainEdit(localPosition, Radius, isAdditive);
+
+            if (localPosition == endPosition)
+            {
+                return new TerrainEdit(localPosition, Radius, isAdditive);
+            }
+
+            return new TerrainEdit(localPosition, endPosition, Radius, isAdditive, BrushShape.Capsule);
         }
     }
 }

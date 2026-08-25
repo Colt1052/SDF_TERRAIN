@@ -82,5 +82,46 @@ namespace SDFTerrain.Tests
             Assert.AreEqual(position, edit.LocalPosition);
             Assert.AreEqual(2f, edit.Radius);
         }
+
+        [Test]
+        public void ToEdit_WithEndPosition_SamePosition_ProducesCircle()
+        {
+            var brush = new TerrainBrush(BrushMode.Add, radius: 3f);
+            var position = new Vector2(5f, 0f);
+
+            TerrainEdit edit = brush.ToEdit(position, position);
+
+            Assert.AreEqual(BrushShape.Circle, edit.Shape);
+            Assert.AreEqual(position, edit.LocalPosition);
+        }
+
+        [Test]
+        public void ToEdit_WithEndPosition_DifferentPositions_ProducesCapsule()
+        {
+            var brush = new TerrainBrush(BrushMode.Remove, radius: 2f);
+            var startPos = new Vector2(0f, 0f);
+            var endPos = new Vector2(6f, 0f);
+
+            TerrainEdit edit = brush.ToEdit(startPos, endPos);
+
+            Assert.AreEqual(BrushShape.Capsule, edit.Shape);
+            Assert.AreEqual(startPos, edit.LocalPosition);
+            Assert.AreEqual(endPos, edit.EndPosition);
+            Assert.AreEqual(2f, edit.Radius);
+            Assert.IsTrue(edit.IsAdditive);
+        }
+
+        [Test]
+        public void ToEdit_WithEndPosition_AddMode_ProducesNonAdditiveCapsule()
+        {
+            var brush = new TerrainBrush(BrushMode.Add, radius: 3f);
+            var startPos = new Vector2(1f, 2f);
+            var endPos = new Vector2(4f, 6f);
+
+            TerrainEdit edit = brush.ToEdit(startPos, endPos);
+
+            Assert.AreEqual(BrushShape.Capsule, edit.Shape);
+            Assert.IsFalse(edit.IsAdditive);
+        }
     }
 }

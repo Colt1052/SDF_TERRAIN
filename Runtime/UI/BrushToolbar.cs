@@ -45,6 +45,10 @@ namespace SDFTerrain.UI
         private BrushMode _mode;
         private bool _isActive;
 
+        // Previous mouse position in planet-local space for capsule-shaped brush strokes.
+        private Vector2 _previousLocalPosition;
+        private bool _hasPreviousPosition;
+
         public BrushMode Mode
         {
             get => _mode;
@@ -133,7 +137,28 @@ namespace SDFTerrain.UI
 
         private void HandleMouseInput()
         {
-            _isActive = Input.GetMouseButton(0);
+            bool mouseHeld = Input.GetMouseButton(0);
+
+            // On mouse down, initialize the previous position for capsule tracking.
+            if (mouseHeld && !_isActive)
+            {
+                Camera camera = targetCamera != null ? targetCamera : Camera.main;
+                if (camera != null)
+                {
+                    Vector2 worldPosition = camera.ScreenToWorldPoint(Input.mousePosition);
+                    Vector2 planetCenterPosition = planetCenter != null ? (Vector2)planetCenter.position : Vector2.zero;
+                    _previousLocalPosition = PlanetCoordinates.WorldToLocal(worldPosition, planetCenterPosition);
+                    _hasPreviousPosition = true;
+                }
+            }
+
+            // On mouse up, clear the previous position so the next stroke starts fresh.
+            if (!mouseHeld && _isActive)
+            {
+                _hasPreviousPosition = false;
+            }
+
+            _isActive = mouseHeld;
 
             if (_isActive)
             {
@@ -165,7 +190,16 @@ namespace SDFTerrain.UI
             Vector2 localPosition = PlanetCoordinates.WorldToLocal(worldPosition, planetCenterPosition);
 
             var brush = new TerrainBrush(_mode, brushRadius);
-            BrushAreaDelta delta = chunkTerrainRenderer.ApplyBrush(brush, localPosition, strikeRadius, searchRayCount);
+
+            // Use the previous mouse position to form a capsule-shaped brush stroke.
+            // On the first frame of a drag, previous == current so we get a circle.
+            Vector2 strokeEnd = _hasPreviousPosition ? _previousLocalPosition : localPosition;
+            BrushAreaDelta delta = chunkTerrainRenderer.ApplyBrush(brush, localPosition, strokeEnd,
+                strikeRadius, searchRayCount);
+
+            // Update previous position for the next frame's capsule segment.
+            _previousLocalPosition = localPosition;
+            _hasPreviousPosition = true;
 
             if (terrainStats != null)
             {

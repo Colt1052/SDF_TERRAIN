@@ -173,6 +173,23 @@ namespace SDFTerrain.Terrain
         /// <returns>A <see cref="BrushAreaDelta"/> describing the solid area change.</returns>
         public BrushAreaDelta ApplyBrush(TerrainBrush brush, Vector2 localPosition, float strikeRadius, int searchRayCount = 36)
         {
+            return ApplyBrush(brush, localPosition, localPosition, strikeRadius, searchRayCount);
+        }
+
+        /// <summary>
+        /// Overload of <see cref="ApplyBrush"/> that accepts an <paramref name="endPosition"/> for
+        /// capsule-shaped brush strokes. When <paramref name="endPosition"/> equals <paramref name="localPosition"/>,
+        /// the result is a circle (degenerate capsule).
+        /// </summary>
+        /// <param name="brush">The brush to apply.</param>
+        /// <param name="localPosition">Start of the brush stroke in planet-local space.</param>
+        /// <param name="endPosition">End of the brush stroke in planet-local space (forms a capsule with localPosition).</param>
+        /// <param name="strikeRadius">Crater size for Electric mode.</param>
+        /// <param name="searchRayCount">Search ray count for Electric mode.</param>
+        /// <returns>A <see cref="BrushAreaDelta"/> describing the solid area change.</returns>
+        public BrushAreaDelta ApplyBrush(TerrainBrush brush, Vector2 localPosition, Vector2 endPosition,
+            float strikeRadius, int searchRayCount = 36)
+        {
             if (_chunkViews.Count == 0)
             {
                 throw new InvalidOperationException("ApplyBrush requires Initialize to have been called first.");
@@ -191,12 +208,12 @@ namespace SDFTerrain.Terrain
             // Determine which chunks will be affected and their bounds rectangle.
             // For Electric mode, pre-finds the strike point to know which chunks to mark dirty.
             bool wasApplied = false;
-            GetBrushBounds(brush, localPosition, strikeRadius, searchRayCount,
+            GetBrushBounds(brush, localPosition, endPosition, strikeRadius, searchRayCount,
                 out float brushMinX, out float brushMaxX, out float brushMinY, out float brushMaxY,
                 ref wasApplied);
 
             // Apply the edit and mark chunks dirty.
-            ApplyEditAndMarkDirty(brush, localPosition, strikeRadius, searchRayCount,
+            ApplyEditAndMarkDirty(brush, localPosition, endPosition, strikeRadius, searchRayCount,
                 brushMinX, brushMaxX, brushMinY, brushMaxY, ref wasApplied);
 
             // Rebuild dirty chunks (fires TerrainChanged, sets ChunkView.SolidArea).
@@ -216,9 +233,10 @@ namespace SDFTerrain.Terrain
         /// <summary>
         /// Determines the bounding rectangle of the brush footprint so that
         /// <see cref="MarkDirtyRect"/> knows which chunks to mark dirty.
+        /// For capsule strokes, the bounds span both anchors.
         /// For Electric mode, pre-finds the surface strike point.
         /// </summary>
-        private void GetBrushBounds(TerrainBrush brush, Vector2 localPosition,
+        private void GetBrushBounds(TerrainBrush brush, Vector2 localPosition, Vector2 endPosition,
             float strikeRadius, int searchRayCount,
             out float minX, out float maxX, out float minY, out float maxY,
             ref bool wasApplied)
@@ -243,10 +261,15 @@ namespace SDFTerrain.Terrain
             else
             {
                 wasApplied = true;
-                minX = localPosition.x - brush.Radius;
-                maxX = localPosition.x + brush.Radius;
-                minY = localPosition.y - brush.Radius;
-                maxY = localPosition.y + brush.Radius;
+                // Bounds must cover the full capsule extent.
+                float extentMinX = Mathf.Min(localPosition.x, endPosition.x) - brush.Radius;
+                float extentMaxX = Mathf.Max(localPosition.x, endPosition.x) + brush.Radius;
+                float extentMinY = Mathf.Min(localPosition.y, endPosition.y) - brush.Radius;
+                float extentMaxY = Mathf.Max(localPosition.y, endPosition.y) + brush.Radius;
+                minX = extentMinX;
+                maxX = extentMaxX;
+                minY = extentMinY;
+                maxY = extentMaxY;
             }
         }
 
@@ -254,7 +277,7 @@ namespace SDFTerrain.Terrain
         /// Applies the brush edit to the field and marks affected chunks dirty.
         /// Does NOT rebuild — caller is responsible for calling RebuildDirtyChunks.
         /// </summary>
-        private void ApplyEditAndMarkDirty(TerrainBrush brush, Vector2 localPosition,
+        private void ApplyEditAndMarkDirty(TerrainBrush brush, Vector2 localPosition, Vector2 endPosition,
             float strikeRadius, int searchRayCount,
             float brushMinX, float brushMaxX, float brushMinY, float brushMaxY,
             ref bool wasApplied)
@@ -263,14 +286,14 @@ namespace SDFTerrain.Terrain
             {
                 case BrushMode.Add:
                     {
-                        TerrainEdit edit = brush.ToEdit(localPosition);
+                        TerrainEdit edit = brush.ToEdit(localPosition, endPosition);
                         _field.ApplyEdit(edit);
                         MarkDirtyRect(brushMinX, brushMaxX, brushMinY, brushMaxY, createChunks: true);
                         break;
                     }
                 case BrushMode.Remove:
                     {
-                        TerrainEdit edit = brush.ToEdit(localPosition);
+                        TerrainEdit edit = brush.ToEdit(localPosition, endPosition);
                         _field.ApplyEdit(edit);
                         MarkDirtyRect(brushMinX, brushMaxX, brushMinY, brushMaxY, createChunks: false);
                         break;
