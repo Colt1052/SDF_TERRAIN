@@ -16,13 +16,15 @@ namespace SDFTerrain.Resources
         public float LocalPositionY;
         public float Radius;
         public bool IsAdditive;
+        public bool Clamped;
 
         public TerrainEdit ToTerrainEdit()
         {
             return new TerrainEdit(
                 new Vector2(LocalPositionX, LocalPositionY),
                 Radius,
-                IsAdditive);
+                IsAdditive,
+                Clamped);
         }
     }
 
@@ -111,6 +113,7 @@ namespace SDFTerrain.Resources
                     LocalPositionY = edit.LocalPosition.y,
                     Radius = edit.Radius,
                     IsAdditive = edit.IsAdditive,
+                    Clamped = edit.Clamped,
                 };
             }
 

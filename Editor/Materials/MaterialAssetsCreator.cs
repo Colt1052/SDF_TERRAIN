@@ -32,6 +32,11 @@ namespace SDFTerrain.Editor
             new object[] { "gold_ore",     "Gold Ore",     new Color(0.85f, 0.75f, 0.20f),  5.0f, 0.40f, 0.4f, 6.0f,  1064f,  0.45f },
             new object[] { "uranium_ore",  "Uranium Ore",  new Color(0.20f, 0.50f, 0.15f),  4.5f, 0.50f, 0.5f, 1.0f, 1405f,  0.55f },
             new object[] { "magma",        "Magma",        new Color(0.90f, 0.30f, 0.05f),  2.5f, 0.05f, 0.1f, 5.0f, 2000f,  0.05f },
+
+            // Geological profile materials (EarthLike profile)
+            new object[] { "deep_stone",   "Deep Stone",   new Color(0.35f, 0.35f, 0.38f),  3.0f, 0.70f, 0.5f, 1.8f, 1600f,  0.80f },
+            new object[] { "mantle",       "Mantle",       new Color(0.70f, 0.30f, 0.10f),  3.3f, 0.80f, 0.4f, 3.0f, 1300f,  0.60f },
+            new object[] { "molten_mantle","Molten Mantle",new Color(0.95f, 0.45f, 0.05f),  3.0f, 0.05f, 0.1f, 5.0f, 1400f,  0.05f },
         };
 
         [MenuItem("Tools/SDF Terrain/Create Default Materials")]

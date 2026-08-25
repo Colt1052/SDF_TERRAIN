@@ -55,6 +55,18 @@ namespace SDFTerrain.Terrain
         public IReadOnlyList<TerrainEdit> Edits => _edits;
 
         /// <summary>
+        /// Returns the base (unedited) signed distance at the given planet-local position.
+        /// This is the sphere-with-noise SDF without any player edits applied. Use for
+        /// geological depth calculations so that material layers are determined by the
+        /// natural terrain rather than the current edit state.
+        /// </summary>
+        public float SampleBase(Vector2 localPosition)
+        {
+            float angle = Core.RadialMath.AngleOf(localPosition);
+            return localPosition.magnitude - SurfaceRadiusAt(angle);
+        }
+
+        /// <summary>
         /// Enables per-chunk edit membership tracking against the given grid, so
         /// <see cref="Sample(Vector2, int)"/> can scan only edits that can actually affect a
         /// chunk instead of every edit ever applied. Existing edits (if any) are indexed
@@ -377,6 +389,34 @@ namespace SDFTerrain.Terrain
             }
 
             return pruned;
+        }
+
+        /// <summary>
+        /// Measures the solid area inside a circular region using grid sampling.
+        /// This is the same approach used by <see cref="ChunkTerrainRenderer.ApplyBrush"/>
+        /// and <see cref="BrushAreaDelta"/> for tracking area deltas.
+        /// </summary>
+        public float GetSolidAreaInCircle(Vector2 center, float radius, int sampleResolution = 16)
+        {
+            if (radius <= 0f) return 0f;
+            if (sampleResolution < 2) sampleResolution = 2;
+
+            float step = (2f * radius) / sampleResolution;
+            float areaPerSample = step * step;
+            int solidCount = 0;
+
+            for (float y = -radius; y <= radius; y += step)
+            {
+                for (float x = -radius; x <= radius; x += step)
+                {
+                    Vector2 pos = center + new Vector2(x, y);
+                    if (Vector2.Distance(pos, center) > radius) continue;
+                    if (Sample(pos) <= 0f)
+                        solidCount++;
+                }
+            }
+
+            return solidCount * areaPerSample;
         }
 
         /// <summary>Removes all persisted edits, leaving only the base sphere.</summary>

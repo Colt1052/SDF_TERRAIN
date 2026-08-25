@@ -64,10 +64,18 @@ namespace SDFTerrain.Materials
             if (profile == null)
                 throw new System.ArgumentNullException(nameof(profile));
 
-            float sdf = field.Sample(localPosition);
+            // Use the edited SDF to check whether the position is currently in air
+            // (player may have excavated this region).
+            float editedSdf = field.Sample(localPosition);
+
+            // Use the base (unedited) SDF for geological depth. Geological strata are
+            // a property of the natural planet, not the current edit state. A dig that
+            // raises the SDF locally should not cause the material underneath to be
+            // reclassified as a shallower layer (e.g., stone appearing as dirt).
+            float baseSdf = field.SampleBase(localPosition);
 
             // In air — return air material
-            if (sdf > 0f)
+            if (editedSdf > 0f)
             {
                 return new GeologicalSampleResult(
                     profile.AirMaterialId,
@@ -76,14 +84,21 @@ namespace SDFTerrain.Materials
                     false);
             }
 
-            // Depth below surface
-            float depth = -sdf;
+            // Depth below natural surface
+            float depth = -baseSdf;
 
             // Compute local physical conditions
             float temperature = ComputeTemperature(depth, profile);
             float pressure = ComputePressure(depth, profile);
 
-            // Evaluate layers surface-to-core
+            // Evaluate layers surface-to-core.
+            // Each layer's (perturbed) start depth is the depth at which it begins.
+            // The deepest matching layer — the one with the highest start depth the query
+            // depth has reached — is the correct stratum. Walk all layers and keep the
+            // last match; the fallback handles the (impossible) case of zero matches.
+            string bestMaterialId = profile.FallbackMaterialId;
+            bool bestIsMolten = false;
+
             for (int i = 0; i < profile.Layers.Length; i++)
             {
                 GeologicalLayer layer = profile.Layers[i];
@@ -99,7 +114,7 @@ namespace SDFTerrain.Materials
 
                 if (depth >= perturbedStartDepth)
                 {
-                    // Determine if this material should be molten
+                    // Remember this layer as the deepest match so far.
                     string materialId = layer.MaterialId;
                     bool isMolten = false;
 
@@ -111,16 +126,12 @@ namespace SDFTerrain.Materials
                             : layer.MaterialId + "_molten";
                     }
 
-                    return new GeologicalSampleResult(materialId, temperature, pressure, isMolten);
+                    bestMaterialId = materialId;
+                    bestIsMolten = isMolten;
                 }
             }
 
-            // Exhausted all layers — use fallback
-            return new GeologicalSampleResult(
-                profile.FallbackMaterialId,
-                temperature,
-                pressure,
-                false);
+            return new GeologicalSampleResult(bestMaterialId, temperature, pressure, bestIsMolten);
         }
 
         /// <summary>

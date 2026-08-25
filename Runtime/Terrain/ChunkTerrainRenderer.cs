@@ -80,6 +80,13 @@ namespace SDFTerrain.Terrain
 
         /// <summary>The terrain field this renderer was initialized with. Null before Initialize.</summary>
         public TerrainField Field => _field;
+
+        /// <summary>
+        /// Returns the chunk index that contains <paramref name="localPosition"/>.
+        /// Requires <see cref="Initialize"/> to have been called.
+        /// </summary>
+        public int GetChunkIndex(Vector2 localPosition) => _chunkGrid.GetChunkAt(localPosition).Index;
+
         private readonly Dictionary<int, ChunkView> _chunkViews = new Dictionary<int, ChunkView>();
         private readonly List<int> _rectBuffer = new List<int>();
 

@@ -53,7 +53,7 @@ namespace SDFTerrain.Resources
             float minY = center.y - radius;
             float maxY = center.y + radius;
 
-            for (float y = minX; y <= maxY; y += stepY)
+            for (float y = minY; y <= maxY; y += stepY)
             {
                 for (float x = minX; x <= maxX; x += stepX)
                 {

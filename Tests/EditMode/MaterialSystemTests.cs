@@ -746,9 +746,9 @@ namespace SDFTerrain.Tests
             // Pre-load inventory with resources
             inv.Add("stone", 5000);
 
-            // Place stone at sphere center
+            // Place stone outside the sphere where there is air to fill (costs resources)
             float radius = 1f;
-            var result = system.Place(Vector2.zero, radius, stoneId, "stone");
+            var result = system.Place(new Vector2(0f, 12f), radius, stoneId, "stone");
 
             Assert.IsTrue(result.Succeeded);
             Assert.AreEqual(stoneId, result.MaterialPlaced);
@@ -758,8 +758,8 @@ namespace SDFTerrain.Tests
             // Verify material layer has the edit
             Assert.AreEqual(1, layer.EditCount);
 
-            // Verify the material at center is now the placed material
-            var sample = layer.Sample(field, Vector2.zero);
+            // Verify the material at the edge of placed region is now the placed material
+            var sample = layer.Sample(field, new Vector2(0f, 12f));
             Assert.AreEqual(stoneId, sample.MaterialId);
             db.Clear();
         }
@@ -781,8 +781,8 @@ namespace SDFTerrain.Tests
 
             var system = new TerrainExcavationSystem(field, layer, inv, table, db);
 
-            // No resources in inventory
-            var result = system.Place(Vector2.zero, 2f, stoneId, "stone");
+            // No resources in inventory — place outside the sphere where there is air to fill
+            var result = system.Place(new Vector2(0f, 15f), 2f, stoneId, "stone");
 
             Assert.IsFalse(result.Succeeded);
             Assert.AreEqual(0, layer.EditCount, "Should not have created a material edit");
