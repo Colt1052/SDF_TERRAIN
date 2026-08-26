@@ -459,5 +459,246 @@ namespace SDFTerrain.Tests
 
             Assert.AreEqual(full, indexed, 1e-5f);
         }
+
+        // ---- PruneRedundantEdits ----
+
+        [Test]
+        public void PruneRedundantEdits_SmallDigInLargeCavity_Removed()
+        {
+            // A small dig entirely inside a larger mined cavity should be detected as redundant.
+            var field = new TerrainField(10f);
+
+            // First, carve a large cavity at (5, 0) — this removes terrain deeply.
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 5f, isAdditive: true));
+
+            // Then, a small dig well inside that cavity.
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 1f, isAdditive: true));
+
+            Assert.AreEqual(2, field.Edits.Count);
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(1, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+            // The large dig should remain.
+            Assert.AreEqual(5f, field.Edits[0].Radius);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_DigInSolid_Kept()
+        {
+            // A dig that actually carves solid terrain should NOT be removed.
+            var field = new TerrainField(10f);
+
+            // Dig at the center of the planet (deep in solid terrain).
+            field.ApplyEdit(new TerrainEdit(Vector2.zero, radius: 2f, isAdditive: true));
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_BuildBuriedByLaterEdit_Removed()
+        {
+            // A build edit that extends terrain at the surface, then gets covered by a
+            // later larger build, should be detected as redundant.
+            var field = new TerrainField(10f);
+
+            // Small build at the surface (10, 0) — this extends terrain outward.
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 1f, isAdditive: false));
+
+            // Larger build at same position — completely envelops the small one.
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 5f, isAdditive: false));
+
+            Assert.AreEqual(2, field.Edits.Count);
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(1, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+            // The larger build should remain.
+            Assert.AreEqual(5f, field.Edits[0].Radius);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_BuildOnSurface_Kept()
+        {
+            // A build edit that extends the terrain surface should NOT be removed.
+            var field = new TerrainField(10f);
+
+            // Build at the surface (10, 0) — adds terrain outward.
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 2f, isAdditive: false));
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_BuildInEmptySpace_Kept()
+        {
+            // A standalone build edit in empty space should NOT be removed.
+            var field = new TerrainField(10f);
+
+            // Build far from the planet, in empty space.
+            field.ApplyEdit(new TerrainEdit(new Vector2(30f, 0f), radius: 2f, isAdditive: false));
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_MultipleRedundant_RemovedInOneSweep()
+        {
+            var field = new TerrainField(10f);
+
+            // Large cavity.
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 5f, isAdditive: true));
+
+            // Three small digs inside the cavity.
+            field.ApplyEdit(new TerrainEdit(new Vector2(4f, 0f), radius: 0.5f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(6f, 0f), radius: 0.5f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 0.5f, isAdditive: true));
+
+            Assert.AreEqual(4, field.Edits.Count);
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(3, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_SamplingUnchangedAfterPrune()
+        {
+            var field = new TerrainField(10f);
+
+            // Carve a cavity.
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 5f, isAdditive: true));
+
+            // Redundant small dig inside.
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 1f, isAdditive: true));
+
+            // Record samples before pruning.
+            Vector2[] testPositions =
+            {
+                new Vector2(0f, 0f),
+                new Vector2(5f, 0f),
+                new Vector2(10f, 0f),
+                new Vector2(-5f, 5f),
+                new Vector2(8f, 3f),
+            };
+
+            float[] before = new float[testPositions.Length];
+            for (int i = 0; i < testPositions.Length; i++)
+            {
+                before[i] = field.Sample(testPositions[i]);
+            }
+
+            field.PruneRedundantEdits();
+
+            for (int i = 0; i < testPositions.Length; i++)
+            {
+                Assert.AreEqual(before[i], field.Sample(testPositions[i]), 1e-4f,
+                    $"Sample mismatch at {testPositions[i]}");
+            }
+        }
+
+        [Test]
+        public void PruneRedundantEdits_ChunkIndexingPreserved()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Carve a cavity, then add redundant dig.
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 4f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 1f, isAdditive: true));
+
+            field.PruneRedundantEdits();
+
+            // Chunk-indexed sampling should still match full-scan sampling.
+            foreach (TerrainChunk chunk in grid.AllChunks)
+            {
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f,
+                    (chunk.MinY + chunk.MaxY) * 0.5f);
+
+                float expected = field.Sample(sample);
+                float actual = field.Sample(sample, chunk.Index);
+                Assert.AreEqual(expected, actual, 1e-5f,
+                    $"Chunk-indexed mismatch at chunk {chunk.Index} after prune");
+            }
+        }
+
+        [Test]
+        public void PruneRedundantEdits_EmptyField_Safe()
+        {
+            var field = new TerrainField(10f);
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(0, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_CapsuleEdit_RedundantRemoved()
+        {
+            var field = new TerrainField(10f);
+
+            // Large capsule dig.
+            var start = new Vector2(5f, 0f);
+            var end = new Vector2(10f, 0f);
+            field.ApplyEdit(new TerrainEdit(start, end, radius: 4f, isAdditive: true, BrushShape.Capsule));
+
+            // Small capsule dig entirely inside the large one.
+            var smallStart = new Vector2(6f, 0f);
+            var smallEnd = new Vector2(8f, 0f);
+            field.ApplyEdit(new TerrainEdit(smallStart, smallEnd, radius: 1f, isAdditive: true, BrushShape.Capsule));
+
+            Assert.AreEqual(2, field.Edits.Count);
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(1, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_DigThatMovesSurface_Kept()
+        {
+            // A dig at the surface that shifts the boundary should NOT be removed.
+            var field = new TerrainField(10f);
+
+            // Dig centered exactly at the surface.
+            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0f), radius: 2f, isAdditive: true));
+
+            int pruned = field.PruneRedundantEdits();
+
+            Assert.AreEqual(0, pruned);
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void PruneRedundantEdits_Idempotent()
+        {
+            // Running prune twice should produce the same result as running it once.
+            var field = new TerrainField(10f);
+
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 5f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f), radius: 1f, isAdditive: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(-5f, 0f), radius: 2f, isAdditive: true));
+
+            int firstPrune = field.PruneRedundantEdits();
+            int secondPrune = field.PruneRedundantEdits();
+
+            Assert.AreEqual(0, secondPrune, "Second prune should find no additional redundant edits.");
+            Assert.Greater(firstPrune, 0, "First prune should have found redundant edits.");
+        }
     }
 }

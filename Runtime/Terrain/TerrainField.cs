@@ -103,6 +103,29 @@ namespace SDFTerrain.Terrain
         }
 
         /// <summary>
+        /// Computes the SDF at <paramref name="localPosition"/>, optionally skipping one edit
+        /// by index. Used by area-based redundancy checks to compare the field with and without
+        /// a specific edit. Pass <paramref name="excludeEditIndex"/> as -1 to include all edits.
+        /// </summary>
+        private float SampleAt(Vector2 localPosition, int excludeEditIndex)
+        {
+            float angle = Core.RadialMath.AngleOf(localPosition);
+            float distance = localPosition.magnitude - SurfaceRadiusAt(angle);
+
+            for (int i = 0; i < _edits.Count; i++)
+            {
+                if (i == excludeEditIndex)
+                    continue;
+
+                TerrainEdit edit = _edits[i];
+                float contribution = edit.SampleContribution(localPosition);
+                distance = edit.IsAdditive ? Mathf.Max(distance, contribution) : Mathf.Min(distance, contribution);
+            }
+
+            return distance;
+        }
+
+        /// <summary>
         /// Finds the nearest terrain surface point within <paramref name="radius"/> of
         /// <paramref name="localPosition"/>. The surface is defined as the zero-crossing of the
         /// SDF (where <see cref="Sample"/> returns zero).
@@ -182,32 +205,7 @@ namespace SDFTerrain.Terrain
         /// </summary>
         public float Sample(Vector2 localPosition)
         {
-            float angle = Core.RadialMath.AngleOf(localPosition);
-            float distance = localPosition.magnitude - SurfaceRadiusAt(angle);
-
-            for (int i = 0; i < _edits.Count; i++)
-            {
-                TerrainEdit edit = _edits[i];
-
-                // No distance-based skip here: SampleContribution is now an unbounded linear
-                // field (unclamped past the brush radius), so far from the brush a dig's
-                // contribution runs off toward -infinity (Max below naturally ignores it) and a
-                // build's runs off toward +infinity (Min naturally ignores it) — the CSG combine
-                // self-limits without an explicit early-out, and combining every edit
-                // unconditionally keeps the field continuous everywhere, which is what lets
-                // MarchingSquaresMesher's linear edge interpolation reconstruct a smooth circle
-                // right up to and across the brush boundary.
-                float contribution = edit.SampleContribution(localPosition);
-
-                // CSG-style combine, not a sum: a dig only ever pushes distance toward air (never
-                // past the brush's own target), a build only ever pushes it toward solid. This
-                // makes repeated/overlapping edits at the same spot idempotent (re-digging an
-                // already-empty spot has no further effect) instead of "melting" deeper the more
-                // strokes overlap, which a straight distance += contribution sum would do.
-                distance = edit.IsAdditive ? Mathf.Max(distance, contribution) : Mathf.Min(distance, contribution);
-            }
-
-            return distance;
+            return SampleAt(localPosition, -1);
         }
 
         /// <summary>
@@ -396,7 +394,13 @@ namespace SDFTerrain.Terrain
         /// This is the same approach used by <see cref="ChunkTerrainRenderer.ApplyBrush"/>
         /// and <see cref="BrushAreaDelta"/> for tracking area deltas.
         /// </summary>
-        public float GetSolidAreaInCircle(Vector2 center, float radius, int sampleResolution = 16)
+        /// <param name="center">Center of the circular region.</param>
+        /// <param name="radius">Radius of the region.</param>
+        /// <param name="sampleResolution">Grid resolution along each axis.</param>
+        /// <param name="excludeEditIndex">If non-negative, skips the edit at this index during
+        /// sampling. Used by <see cref="PruneRedundantEdits"/> to compare area with and without
+        /// a candidate edit. Pass -1 (default) to include all edits.</param>
+        public float GetSolidAreaInCircle(Vector2 center, float radius, int sampleResolution = 16, int excludeEditIndex = -1)
         {
             if (radius <= 0f) return 0f;
             if (sampleResolution < 2) sampleResolution = 2;
@@ -411,12 +415,153 @@ namespace SDFTerrain.Terrain
                 {
                     Vector2 pos = center + new Vector2(x, y);
                     if (Vector2.Distance(pos, center) > radius) continue;
-                    if (Sample(pos) <= 0f)
+                    if (SampleAt(pos, excludeEditIndex) <= 0f)
                         solidCount++;
                 }
             }
 
             return solidCount * areaPerSample;
+        }
+
+        /// <summary>
+        /// Measures the solid area inside a rectangular region using grid sampling.
+        /// Used for capsule-shaped edits where the footprint is not circular.
+        /// </summary>
+        private float GetSolidAreaInRect(float minX, float maxX, float minY, float maxY,
+            int samplesPerAxis, int excludeEditIndex)
+        {
+            if (samplesPerAxis < 2) samplesPerAxis = 2;
+
+            float stepX = (maxX - minX) / samplesPerAxis;
+            float stepY = (maxY - minY) / samplesPerAxis;
+            float areaPerSample = stepX * stepY;
+            int solidCount = 0;
+
+            for (float y = minY; y <= maxY; y += stepY)
+            {
+                for (float x = minX; x <= maxX; x += stepX)
+                {
+                    Vector2 pos = new Vector2(x, y);
+                    if (SampleAt(pos, excludeEditIndex) <= 0f)
+                        solidCount++;
+                }
+            }
+
+            return solidCount * areaPerSample;
+        }
+
+        /// <summary>
+        /// Finds and removes edits that no longer affect the terrain geometry. An edit is
+        /// redundant when the solid area within its footprint is the same with and without
+        /// that edit — meaning the edit does not shift any zero-crossing and is effectively
+        /// a no-op. For example, a small dig entirely inside a larger mined cavity, or a
+        /// build entirely buried under later terrain.
+        /// </summary>
+        /// <param name="samplesPerAxis">Grid resolution for area estimation. Higher = more
+        /// accurate, slower. Default 16 is sufficient for most brush sizes.</param>
+        /// <returns>The number of redundant edits removed.</returns>
+        public int PruneRedundantEdits(int samplesPerAxis = 16)
+        {
+            if (samplesPerAxis < 2) samplesPerAxis = 2;
+
+            int count = _edits.Count;
+            bool[] isRedundant = new bool[count];
+            int redundantCount = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                TerrainEdit edit = _edits[i];
+
+                // Skip zero-radius edits — they are handled by PruneDeadEdits.
+                if (edit.Radius <= 0f)
+                    continue;
+
+                // Compute solid area within the edit's footprint, with and without this edit.
+                float areaWith;
+                float areaWithout;
+                float footprintArea;
+
+                if (edit.Shape == BrushShape.Capsule && edit.LocalPosition != edit.EndPosition)
+                {
+                    // Use bounding box for capsule edits.
+                    edit.GetBoundingBox(out float minX, out float maxX, out float minY, out float maxY);
+                    areaWith = GetSolidAreaInRect(minX, maxX, minY, maxY, samplesPerAxis, -1);
+                    areaWithout = GetSolidAreaInRect(minX, maxX, minY, maxY, samplesPerAxis, i);
+                    float width = maxX - minX;
+                    float height = maxY - minY;
+                    footprintArea = width * height;
+                }
+                else
+                {
+                    // Use circular region for circle edits (and degenerate capsules).
+                    areaWith = GetSolidAreaInCircle(edit.LocalPosition, edit.Radius, samplesPerAxis, -1);
+                    areaWithout = GetSolidAreaInCircle(edit.LocalPosition, edit.Radius, samplesPerAxis, i);
+                    footprintArea = Mathf.PI * edit.Radius * edit.Radius;
+                }
+
+                // If the area difference is negligible (less than 0.1% of footprint), the edit
+                // is redundant. This tolerance accounts for grid-sampling quantization.
+                float tolerance = footprintArea * 0.001f;
+                if (Mathf.Abs(areaWith - areaWithout) < tolerance)
+                {
+                    isRedundant[i] = true;
+                    redundantCount++;
+                }
+            }
+
+            if (redundantCount == 0)
+                return 0;
+
+            // Compact _edits and remap chunk indices (same pattern as PruneDeadEdits).
+            int writeIndex = 0;
+            int[] oldToNew = new int[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                if (isRedundant[i])
+                {
+                    oldToNew[i] = -1;
+                }
+                else
+                {
+                    oldToNew[i] = writeIndex;
+                    if (writeIndex != i)
+                    {
+                        _edits[writeIndex] = _edits[i];
+                    }
+                    writeIndex++;
+                }
+            }
+
+            while (_edits.Count > writeIndex)
+            {
+                _edits.RemoveAt(_edits.Count - 1);
+            }
+
+            // Remap chunk indices and remove references to pruned edits.
+            if (_editsByChunkKey != null)
+            {
+                foreach (List<int> chunkList in _editsByChunkKey.Values)
+                {
+                    int w = 0;
+                    for (int r = 0; r < chunkList.Count; r++)
+                    {
+                        int oldIndex = chunkList[r];
+                        int newIndex = oldToNew[oldIndex];
+                        if (newIndex >= 0)
+                        {
+                            chunkList[w] = newIndex;
+                            w++;
+                        }
+                    }
+                    while (chunkList.Count > w)
+                    {
+                        chunkList.RemoveAt(chunkList.Count - 1);
+                    }
+                }
+            }
+
+            return redundantCount;
         }
 
         /// <summary>Removes all persisted edits, leaving only the base sphere.</summary>
