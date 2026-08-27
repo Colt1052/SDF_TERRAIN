@@ -385,9 +385,6 @@ namespace SDFTerrain.Terrain
                 BakeChunk(chunk, editIndices, bakeEdit);
             }
 
-            // Post-bake merge: attempt to combine adjacent same-solidity rectangles
-            // created by the incremental baking above.
-            MergeAdjacentRectangleEdits();
         }
 
         /// <summary>
@@ -1059,10 +1056,8 @@ namespace SDFTerrain.Terrain
                 throw new ArgumentOutOfRangeException(nameof(cellSize), cellSize, "Cell size must be positive.");
             }
 
-            // Create per-chunk rectangular edits for uniform covered regions,
-            // then merge adjacent same-solidity rectangles into larger ones.
+            // Create per-chunk rectangular edits for uniform covered regions.
             CreateUniformRegionEdits(cellSize);
-            MergeAdjacentRectangleEdits();
         }
 
         private void CreateUniformRegionEdits(float cellSize)
