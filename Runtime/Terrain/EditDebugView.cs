@@ -17,6 +17,12 @@ namespace SDFTerrain.Terrain
         [Tooltip("Draw edit outlines in the Scene view")]
         [SerializeField] private bool enabled;
 
+        [Tooltip("Show brush-shaped edits (circles and capsules)")]
+        [SerializeField] private bool showBrushEdits = true;
+
+        [Tooltip("Show terrain-shaped edits (rectangles from uniform region baking)")]
+        [SerializeField] private bool showTerrainEdits = true;
+
         [Tooltip("Draw wire spheres at each edit's center point")]
         [SerializeField] private bool drawEditCenters;
 
@@ -69,13 +75,22 @@ namespace SDFTerrain.Terrain
                 if (edit.Radius <= 0.01f)
                     continue;
 
+                // Filter by edit type based on toggle settings.
+                bool isTerrainEdit = edit.Shape == BrushShape.Rectangle;
+                bool isBrushEdit = !isTerrainEdit;
+
+                if (isTerrainEdit && !showTerrainEdits)
+                    continue;
+                if (isBrushEdit && !showBrushEdits)
+                    continue;
+
                 Color color = edit.IsAdditive ? Color.red : Color.green;
 
                 if (edit.Shape == BrushShape.Capsule && edit.LocalPosition != edit.EndPosition)
                 {
                     DrawCapsuleOutline(edit.LocalPosition, edit.EndPosition, edit.Radius, segments, color);
                 }
-                else if (edit.Shape == BrushShape.Rectangle)
+                else if (isTerrainEdit)
                 {
                     DrawRectangleOutline(edit.LocalPosition, edit.EndPosition, color);
                 }

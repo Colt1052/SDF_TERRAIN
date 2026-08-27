@@ -344,18 +344,11 @@ namespace SDFTerrain.Terrain
                 if (editIndices.Count == 0)
                     continue;
 
-                // Skip chunks that are already baked (contain a Rectangle edit).
-                // Baked chunks have a single Rectangle edit covering the entire chunk,
-                // and re-baking them produces an identical edit → infinite loop.
-                bool alreadyBaked = false;
-                foreach (int idx in editIndices)
-                {
-                    if (_edits[idx].Shape == BrushShape.Rectangle)
-                    {
-                        alreadyBaked = true;
-                        break;
-                    }
-                }
+                // Skip chunks that are already baked: a Rectangle edit in this chunk's
+                // list that actually covers the entire chunk.  Merely having a Rectangle
+                // in the list isn't enough — radius expansion during indexing can cause
+                // rectangles from *neighboring* chunks to appear in this chunk's list.
+                bool alreadyBaked = RectangleCoversChunk(chunk, editIndices);
                 if (alreadyBaked)
                     continue;
 
@@ -391,6 +384,10 @@ namespace SDFTerrain.Terrain
                 // We need to remove them from _edits and remap all chunk indices.
                 BakeChunk(chunk, editIndices, bakeEdit);
             }
+
+            // Post-bake merge: attempt to combine adjacent same-solidity rectangles
+            // created by the incremental baking above.
+            MergeAdjacentRectangleEdits();
         }
 
         /// <summary>
@@ -1062,9 +1059,10 @@ namespace SDFTerrain.Terrain
                 throw new ArgumentOutOfRangeException(nameof(cellSize), cellSize, "Cell size must be positive.");
             }
 
-            // Create per-chunk rectangular edits for uniform covered regions.
-            // No longer merges adjacent rectangles — each chunk bakes independently.
+            // Create per-chunk rectangular edits for uniform covered regions,
+            // then merge adjacent same-solidity rectangles into larger ones.
             CreateUniformRegionEdits(cellSize);
+            MergeAdjacentRectangleEdits();
         }
 
         private void CreateUniformRegionEdits(float cellSize)
@@ -1104,16 +1102,8 @@ namespace SDFTerrain.Terrain
                 if (editIndices.Count == 0)
                     continue;
 
-                // Skip if already baked.
-                bool alreadyBaked = false;
-                foreach (int idx in editIndices)
-                {
-                    if (idx >= 0 && idx < _edits.Count && _edits[idx].Shape == BrushShape.Rectangle)
-                    {
-                        alreadyBaked = true;
-                        break;
-                    }
-                }
+                // Skip if already baked: a Rectangle edit that actually covers this chunk.
+                bool alreadyBaked = RectangleCoversChunk(chunk, editIndices);
                 if (alreadyBaked)
                     continue;
 
@@ -1133,6 +1123,36 @@ namespace SDFTerrain.Terrain
                 // Remove old edits and add the baked edit. BakeChunk handles index remapping.
                 BakeChunk(chunk, editIndices, bakeEdit);
             }
+        }
+
+        /// <summary>
+        /// Checks whether any single Rectangle-shaped edit in the given list fully covers
+        /// the chunk. Returns true if a Rectangle edit's bounds entirely encompass the chunk
+        /// bounds. Unlike <see cref="EditUnionCoversChunk"/>, this does not check circle or
+        /// capsule edits, and it only looks for a single dominating rectangle rather than
+        /// verifying coverage via grid sampling.
+        /// </summary>
+        private bool RectangleCoversChunk(TerrainChunk chunk, List<int> editIndices)
+        {
+            for (int i = 0; i < editIndices.Count; i++)
+            {
+                TerrainEdit edit = _edits[editIndices[i]];
+                if (edit.Shape != BrushShape.Rectangle)
+                    continue;
+
+                float rectMinX = Mathf.Min(edit.LocalPosition.x, edit.EndPosition.x);
+                float rectMaxX = Mathf.Max(edit.LocalPosition.x, edit.EndPosition.x);
+                float rectMinY = Mathf.Min(edit.LocalPosition.y, edit.EndPosition.y);
+                float rectMaxY = Mathf.Max(edit.LocalPosition.y, edit.EndPosition.y);
+
+                if (rectMinX <= chunk.MinX && rectMaxX >= chunk.MaxX &&
+                    rectMinY <= chunk.MinY && rectMaxY >= chunk.MaxY)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -1193,6 +1213,189 @@ namespace SDFTerrain.Terrain
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Merges adjacent rectangle edits that share an edge and have the same
+        /// solidity (IsAdditive). This reduces the total edit count and improves
+        /// sampling performance by combining many small rectangles into fewer large ones.
+        ///
+        /// Two rectangles are adjacent if one is exactly to the left/right/above/below
+        /// the other (4-directional, no diagonals), and they align perfectly on the
+        /// shared edge (same extent on the perpendicular axis).
+        ///
+        /// Uses a fixed-point sweep: repeatedly finds mergeable pairs until no more merges
+        /// are possible. After each pass, the edit list is compacted and indices are rebuilt.
+        /// </summary>
+        private void MergeAdjacentRectangleEdits()
+        {
+            // Collect all Rectangle-shaped edits with their indices
+            List<int> rectangleIndices = new List<int>();
+            for (int i = 0; i < _edits.Count; i++)
+            {
+                if (_edits[i].Shape == BrushShape.Rectangle)
+                    rectangleIndices.Add(i);
+            }
+
+            if (rectangleIndices.Count < 2)
+                return; // Nothing to merge
+
+            // Sort for deterministic processing order
+            rectangleIndices.Sort((a, b) =>
+            {
+                TerrainEdit editA = _edits[a];
+                TerrainEdit editB = _edits[b];
+                // Sort by position then size for determinism
+                int cmp = editA.LocalPosition.x.CompareTo(editB.LocalPosition.x);
+                if (cmp != 0) return cmp;
+                cmp = editA.LocalPosition.y.CompareTo(editB.LocalPosition.y);
+                if (cmp != 0) return cmp;
+                cmp = editA.EndPosition.x.CompareTo(editB.EndPosition.x);
+                if (cmp != 0) return cmp;
+                return editA.EndPosition.y.CompareTo(editB.EndPosition.y);
+            });
+
+            // Try to merge pairs until no more merges are found (fixed-point).
+            // Each successful merge reduces the edit count by 1, guaranteeing termination.
+            bool madeMerge;
+            do
+            {
+                madeMerge = false;
+
+                for (int i = 0; i < rectangleIndices.Count && !madeMerge; i++)
+                {
+                    int idxA = rectangleIndices[i];
+                    TerrainEdit editA = _edits[idxA];
+
+                    for (int j = i + 1; j < rectangleIndices.Count && !madeMerge; j++)
+                    {
+                        int idxB = rectangleIndices[j];
+                        TerrainEdit editB = _edits[idxB];
+
+                        // Must have same solidity to merge
+                        if (editA.IsAdditive != editB.IsAdditive)
+                            continue;
+
+                        // Normalize the rectangles (get min/max bounds)
+                        float aMinX = Mathf.Min(editA.LocalPosition.x, editA.EndPosition.x);
+                        float aMaxX = Mathf.Max(editA.LocalPosition.x, editA.EndPosition.x);
+                        float aMinY = Mathf.Min(editA.LocalPosition.y, editA.EndPosition.y);
+                        float aMaxY = Mathf.Max(editA.LocalPosition.y, editA.EndPosition.y);
+
+                        float bMinX = Mathf.Min(editB.LocalPosition.x, editB.EndPosition.x);
+                        float bMaxX = Mathf.Max(editB.LocalPosition.x, editB.EndPosition.x);
+                        float bMinY = Mathf.Min(editB.LocalPosition.y, editB.EndPosition.y);
+                        float bMaxY = Mathf.Max(editB.LocalPosition.y, editB.EndPosition.y);
+
+                        bool adjacent = false;
+
+                        // Check horizontal adjacency: A is left of B
+                        if (Mathf.Approximately(aMaxX, bMinX) &&
+                            Mathf.Approximately(aMinY, bMinY) &&
+                            Mathf.Approximately(aMaxY, bMaxY))
+                        {
+                            adjacent = true;
+                        }
+                        // Check horizontal adjacency: B is left of A
+                        else if (Mathf.Approximately(bMaxX, aMinX) &&
+                                 Mathf.Approximately(bMinY, aMinY) &&
+                                 Mathf.Approximately(bMaxY, aMaxY))
+                        {
+                            adjacent = true;
+                        }
+                        // Check vertical adjacency: A is below B
+                        else if (Mathf.Approximately(aMaxY, bMinY) &&
+                                 Mathf.Approximately(aMinX, bMinX) &&
+                                 Mathf.Approximately(aMaxX, bMaxX))
+                        {
+                            adjacent = true;
+                        }
+                        // Check vertical adjacency: B is below A
+                        else if (Mathf.Approximately(bMaxY, aMinY) &&
+                                 Mathf.Approximately(bMinX, aMinX) &&
+                                 Mathf.Approximately(bMaxX, aMaxX))
+                        {
+                            adjacent = true;
+                        }
+
+                        if (!adjacent)
+                            continue;
+
+                        // Create merged rectangle spanning the union of both bounds.
+                        float mergedMinX = Mathf.Min(aMinX, bMinX);
+                        float mergedMaxX = Mathf.Max(aMaxX, bMaxX);
+                        float mergedMinY = Mathf.Min(aMinY, bMinY);
+                        float mergedMaxY = Mathf.Max(aMaxY, bMaxY);
+
+                        TerrainEdit mergedEdit = new TerrainEdit(
+                            new Vector2(mergedMinX, mergedMinY),
+                            new Vector2(mergedMaxX, mergedMaxY),
+                            editA.Radius,
+                            editA.IsAdditive,
+                            BrushShape.Rectangle,
+                            clamped: true);
+
+                        // Remove both old edits and insert the merged one.
+                        // Remove higher index first to avoid shifting the lower index.
+                        int higherIndex = Mathf.Max(idxA, idxB);
+                        int lowerIndex = Mathf.Min(idxA, idxB);
+                        _edits.RemoveAt(higherIndex);
+                        _edits.RemoveAt(lowerIndex);
+                        _edits.Insert(lowerIndex, mergedEdit);
+
+                        // Rebuild rectangleIndices list after mutation
+                        rectangleIndices.Clear();
+                        for (int k = 0; k < _edits.Count; k++)
+                        {
+                            if (_edits[k].Shape == BrushShape.Rectangle)
+                                rectangleIndices.Add(k);
+                        }
+
+                        // Re-sort for determinism on the next pass
+                        rectangleIndices.Sort((a, b) =>
+                        {
+                            TerrainEdit ea = _edits[a];
+                            TerrainEdit eb = _edits[b];
+                            int c = ea.LocalPosition.x.CompareTo(eb.LocalPosition.x);
+                            if (c != 0) return c;
+                            c = ea.LocalPosition.y.CompareTo(eb.LocalPosition.y);
+                            if (c != 0) return c;
+                            c = ea.EndPosition.x.CompareTo(eb.EndPosition.x);
+                            if (c != 0) return c;
+                            return ea.EndPosition.y.CompareTo(eb.EndPosition.y);
+                        });
+
+                        madeMerge = true;
+                    }
+                }
+
+                // After a successful merge, rebuild chunk indices to reflect the new state.
+                if (madeMerge)
+                {
+                    RebuildChunkIndices();
+                }
+            } while (madeMerge);
+        }
+
+        /// <summary>
+        /// Rebuilds the chunk edit index and reverse index based on the current
+        /// state of the _edits list. This should be called after any operation
+        /// that modifies the edit list.
+        /// </summary>
+        private void RebuildChunkIndices()
+        {
+            if (_editsByChunkKey == null) return;
+
+            // Clear existing indices
+            foreach (var list in _editsByChunkKey.Values)
+                list.Clear();
+            _editChunkKeys?.Clear();
+
+            // Re-index all edits
+            for (int i = 0; i < _edits.Count; i++)
+            {
+                IndexEdit(i, _edits[i]);
+            }
         }
     }
 }
