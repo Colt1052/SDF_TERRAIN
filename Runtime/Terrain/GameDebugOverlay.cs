@@ -47,6 +47,36 @@ namespace SDFTerrain.Terrain
                 _frameCount = 0;
                 _frameTimer = 0f;
             }
+
+            // Keyboard shortcut: L to consolidate uniform regions.
+            if (Input.GetKeyDown(KeyCode.L))
+            {
+                TerrainField field = _terrainField;
+                if (field == null)
+                {
+                    var chunkRenderer = GetComponentInSibling<ChunkTerrainRenderer>();
+                    field = chunkRenderer?.Field;
+                }
+
+                if (field != null)
+                {
+                    ChunkTerrainRenderer renderer = GetComponentInSibling<ChunkTerrainRenderer>();
+                    if (renderer != null)
+                    {
+                        int beforeCount = field.Edits.Count;
+                        try
+                        {
+                            field.ConsolidateUniformRegions(renderer.CellSize);
+                            int afterCount = field.Edits.Count;
+                            Debug.LogFormat("[GameDebugOverlay] ConsolidateUniformRegions: {0} -> {1} edits", beforeCount, afterCount);
+                        }
+                        catch (System.Exception ex)
+                        {
+                            Debug.LogErrorFormat("[GameDebugOverlay] ConsolidateUniformRegions failed: {0}", ex.Message);
+                        }
+                    }
+                }
+            }
         }
 
         private void OnGUI()
@@ -64,8 +94,9 @@ namespace SDFTerrain.Terrain
 
             int editCount = field?.Edits.Count ?? -1;
 
-            GUI.Label(new Rect(8, 8, 200, 24), $"FPS: {_fps:F0}");
-            GUI.Label(new Rect(8, 32, 200, 24), $"Edits: {editCount}");
+            GUI.Label(new Rect(8, 8, 300, 24), $"FPS: {_fps:F0}");
+            GUI.Label(new Rect(8, 32, 300, 24), $"Edits: {editCount}");
+            GUI.Label(new Rect(8, 56, 300, 24), $"[L] Consolidate uniform regions");
         }
 
         /// <summary>

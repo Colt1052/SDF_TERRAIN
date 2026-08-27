@@ -75,6 +75,10 @@ namespace SDFTerrain.Terrain
                 {
                     DrawCapsuleOutline(edit.LocalPosition, edit.EndPosition, edit.Radius, segments, color);
                 }
+                else if (edit.Shape == BrushShape.Rectangle)
+                {
+                    DrawRectangleOutline(edit.LocalPosition, edit.EndPosition, color);
+                }
                 else
                 {
                     DrawCircleOutline(edit.LocalPosition, edit.Radius, segments, color);
@@ -113,6 +117,30 @@ namespace SDFTerrain.Terrain
                     return comp;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Draws a wire rectangle at the given planet-local positions, transformed to world space.
+        /// Uses <paramref name="localPosition"/> and <paramref name="endPosition"/> as opposite corners.
+        /// </summary>
+        private void DrawRectangleOutline(Vector2 localPosition, Vector2 endPosition, Color color)
+        {
+            Gizmos.color = color;
+
+            float minX = Mathf.Min(localPosition.x, endPosition.x);
+            float maxX = Mathf.Max(localPosition.x, endPosition.x);
+            float minY = Mathf.Min(localPosition.y, endPosition.y);
+            float maxY = Mathf.Max(localPosition.y, endPosition.y);
+
+            Vector3 p0 = transform.TransformPoint(new Vector2(minX, minY));
+            Vector3 p1 = transform.TransformPoint(new Vector2(maxX, minY));
+            Vector3 p2 = transform.TransformPoint(new Vector2(maxX, maxY));
+            Vector3 p3 = transform.TransformPoint(new Vector2(minX, maxY));
+
+            Gizmos.DrawLine(p0, p1);
+            Gizmos.DrawLine(p1, p2);
+            Gizmos.DrawLine(p2, p3);
+            Gizmos.DrawLine(p3, p0);
         }
 
         /// <summary>

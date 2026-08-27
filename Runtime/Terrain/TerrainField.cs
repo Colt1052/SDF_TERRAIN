@@ -289,12 +289,267 @@ namespace SDFTerrain.Terrain
         /// <param name="edit">The edit to apply.</param>
         public void ApplyEdit(TerrainEdit edit)
         {
+            // Remove existing edits that are entirely subsumed by this new edit.
+            // Must run BEFORE adding to _edits — otherwise the new edit contains itself
+            // and gets removed immediately.
+            RemoveContainedEdits(edit);
+
             _edits.Add(edit);
 
             if (_editsByChunkKey != null)
             {
                 IndexEdit(_edits.Count - 1, edit);
+
+                // Incremental baking: check if any affected chunks are now fully covered
+                // by the union of their edits, and if so, replace with a single rectangle.
+                TryBakeCoveredChunks();
             }
+        }
+
+        /// <summary>
+        /// Incremental baking: after a new edit is applied, checks all affected chunks
+        /// to see if the union of their edits now completely covers the chunk. For each
+        /// fully-covered uniform chunk, replaces all contributing edits with a single
+        /// Rectangle edit spanning the chunk bounds.
+        ///
+        /// This is the per-edit version of <see cref="ConsolidateUniformRegions"/> that
+        /// runs automatically whenever a new edit lands.
+        /// </summary>
+        private void TryBakeCoveredChunks()
+        {
+            // Collect all chunks that were affected by the latest edit.
+            // The edit was just indexed, so _editChunkKeys contains its chunk keys.
+            if (_editChunkKeys.Count == 0)
+                return;
+
+            // The most recently added edit has index _edits.Count - 1.
+            int latestEditIndex = _edits.Count - 1;
+            if (!_editChunkKeys.TryGetValue(latestEditIndex, out var affectedKeys))
+                return;
+
+            foreach (var key in affectedKeys)
+            {
+                int col = (int)(key >> 32);
+                int row = (int)(key & 0xffffffffL);
+
+                if (!_chunkGrid.HasChunkAtGrid(col, row))
+                    continue;
+
+                TerrainChunk chunk = _chunkGrid.GetChunkAtGrid(col, row);
+
+                // Fetch the list of edits registered against this chunk.
+                if (!_editsByChunkKey.TryGetValue(key, out var editIndices))
+                    continue;
+
+                if (editIndices.Count == 0)
+                    continue;
+
+                // Skip chunks that are already baked (contain a Rectangle edit).
+                // Baked chunks have a single Rectangle edit covering the entire chunk,
+                // and re-baking them produces an identical edit → infinite loop.
+                bool alreadyBaked = false;
+                foreach (int idx in editIndices)
+                {
+                    if (_edits[idx].Shape == BrushShape.Rectangle)
+                    {
+                        alreadyBaked = true;
+                        break;
+                    }
+                }
+                if (alreadyBaked)
+                    continue;
+
+                // Step 1: Sample the chunk to determine if it's uniform.
+                // We need a cell size — use the chunk size as a reasonable default.
+                // The sampler uses a lattice based on cell size; using chunk size gives
+                // us one sample per chunk which is sufficient for uniformity detection.
+                float cellSize = _chunkGrid.ChunkSize;
+                var sampleResult = CartesianChunkFieldSampler.Sample(this, chunk, cellSize);
+
+                if (!sampleResult.IsUniform)
+                    continue; // Not uniform → can't bake
+
+                // Step 2: Check if the union of edits covers the chunk.
+                if (!EditUnionCoversChunk(chunk, editIndices))
+                    continue; // Edits don't fully cover → skip
+
+                // Step 3: Create a rectangular edit that covers the chunk exactly.
+                // For solid regions: non-additive (placement/Min) to push SDF down.
+                // For air regions: additive (removal/Max) to push SDF up.
+                Vector2 bottomLeft = new Vector2(chunk.MinX, chunk.MinY);
+                Vector2 topRight = new Vector2(chunk.MaxX, chunk.MaxY);
+                float diagonal = Mathf.Sqrt(
+                    (chunk.MaxX - chunk.MinX) * (chunk.MaxX - chunk.MinX) +
+                    (chunk.MaxY - chunk.MinY) * (chunk.MaxY - chunk.MinY));
+                float radius = diagonal * 2f;
+                bool isAdditive = !sampleResult.IsSolid;
+
+                TerrainEdit bakeEdit = new TerrainEdit(
+                    bottomLeft, topRight, radius, isAdditive, BrushShape.Rectangle, clamped: true);
+
+                // Step 4: Remove all the old edits for this chunk and add the bake edit.
+                // We need to remove them from _edits and remap all chunk indices.
+                BakeChunk(chunk, editIndices, bakeEdit);
+            }
+        }
+
+        /// <summary>
+        /// Adds a single <paramref name="bakeEdit"/> covering <paramref name="chunk"/> and
+        /// replaces the target chunk's entry in the per-chunk edit index with just this new edit.
+        /// The original edits are NOT removed from <c>_edits</c> — they may still be needed by
+        /// other chunks that share them. The baked chunk samples only the baked rect, which
+        /// produces identical terrain (we verified the chunk is uniform and fully covered before
+        /// calling). The baked rect is clamped, so it has no effect outside its own bounds.
+        /// </summary>
+        private void BakeChunk(TerrainChunk chunk, List<int> editIndices, TerrainEdit bakeEdit)
+        {
+            // Add the baked edit to the global list.
+            int bakeIndex = _edits.Count;
+            _edits.Add(bakeEdit);
+
+            // Replace only the target chunk's edit list — other chunks that share the
+            // original edits keep them untouched.
+            long key = PackKey(chunk.Col, chunk.Row);
+            _editsByChunkKey[key].Clear();
+            _editsByChunkKey[key].Add(bakeIndex);
+
+            // Register the baked edit in the reverse index (for pruning/baking bookkeeping).
+            _editChunkKeys[bakeIndex] = new HashSet<long> { key };
+        }
+
+        /// <summary>
+        /// Finds and removes existing edits that are geometrically redundant because their
+        /// entire footprint is contained within <paramref name="newEdit"/>.
+        ///
+        /// An existing edit is removed when all of these hold:
+        /// <list type="bullet">
+        /// <description>Same <c>BrushShape</c> as <paramref name="newEdit"/>.</description>
+        /// <description>Same <c>IsAdditive</c> sign (both carve or both build).</description>
+        /// <description>Same <c>Clamped</c> flag (identical boundary behavior).</description>
+        /// <description>Radius less than or equal to <paramref name="newEdit"/>'s radius.</description>
+        /// <description>Its bounding box is entirely within <paramref name="newEdit"/>'s bounding box.</description>
+        /// </list>
+        ///
+        /// For same-shape edits, bounding-box containment guarantees that the new edit's shape
+        /// dominates the existing edit's shape everywhere inside the contained bounding box,
+        /// making removal safe. Mixed-shape containment is intentionally conservative — bbox
+        /// containment does not imply shape dominance for different primitives.
+        /// </summary>
+        /// <param name="newEdit">The newly placed edit to check containment against.</param>
+        /// <returns>The number of redundant edits removed.</returns>
+        public int RemoveContainedEdits(TerrainEdit newEdit)
+        {
+            newEdit.GetBoundingBox(out float nMinX, out float nMaxX, out float nMinY, out float nMaxY);
+
+            int count = _edits.Count;
+            List<int> toRemove = null;
+
+            for (int i = 0; i < count; i++)
+            {
+                TerrainEdit existing = _edits[i];
+
+                // Same shape: required so bbox containment implies shape dominance.
+                if (existing.Shape != newEdit.Shape)
+                    continue;
+
+                // Same sign: opposite-sign edits interact non-trivially (Max vs Min CSG).
+                if (existing.IsAdditive != newEdit.IsAdditive)
+                    continue;
+
+                // Same clamped flag: different boundary behavior would change terrain values
+                // at the contained edit's edge.
+                if (existing.Clamped != newEdit.Clamped)
+                    continue;
+
+                // Larger radius cannot be subsumed by a smaller one.
+                if (existing.Radius > newEdit.Radius)
+                    continue;
+
+                // Bounding-box containment check (shape-agnostic via GetBoundingBox).
+                existing.GetBoundingBox(out float eMinX, out float eMaxX, out float eMinY, out float eMaxY);
+
+                if (eMinX >= nMinX && eMaxX <= nMaxX && eMinY >= nMinY && eMaxY <= nMaxY)
+                {
+                    if (toRemove == null)
+                        toRemove = new List<int>();
+                    toRemove.Add(i);
+                }
+            }
+
+            if (toRemove == null || toRemove.Count == 0)
+                return 0;
+
+            // Build old-to-new index mapping.
+            int[] oldToNew = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                bool removed = false;
+                for (int k = 0; k < toRemove.Count; k++)
+                {
+                    if (toRemove[k] == i) { removed = true; break; }
+                }
+                oldToNew[i] = removed ? -1 : i - CountLessThan(toRemove, i);
+            }
+
+            // Compact _edits.
+            int w = 0;
+            for (int i = 0; i < count; i++)
+            {
+                if (oldToNew[i] >= 0)
+                {
+                    if (w != i) _edits[w] = _edits[i];
+                    w++;
+                }
+            }
+            while (_edits.Count > w)
+                _edits.RemoveAt(_edits.Count - 1);
+
+            // Remap chunk indices.
+            if (_editsByChunkKey != null)
+            {
+                foreach (List<int> chunkList in _editsByChunkKey.Values)
+                {
+                    int cw = 0;
+                    for (int cr = 0; cr < chunkList.Count; cr++)
+                    {
+                        int ni = oldToNew[chunkList[cr]];
+                        if (ni >= 0)
+                        {
+                            chunkList[cw] = ni;
+                            cw++;
+                        }
+                    }
+                    while (chunkList.Count > cw)
+                        chunkList.RemoveAt(chunkList.Count - 1);
+                }
+            }
+
+            // Rebuild reverse index from surviving edits.
+            if (_editChunkKeys != null)
+            {
+                var rebuilt = new Dictionary<int, HashSet<long>>();
+                foreach (var kvp in _editChunkKeys)
+                {
+                    int ni = oldToNew[kvp.Key];
+                    if (ni >= 0)
+                        rebuilt[ni] = kvp.Value;
+                }
+                _editChunkKeys = rebuilt;
+            }
+
+            return toRemove.Count;
+        }
+
+        int CountLessThan(List<int> sorted, int value)
+        {
+            int lo = 0, hi = sorted.Count;
+            while (lo < hi)
+            {
+                int mid = (lo + hi) >> 1;
+                if (sorted[mid] < value) lo = mid + 1;
+                else hi = mid;
+            }
+            return lo;
         }
 
         private void IndexEdit(int editIndex, TerrainEdit edit)
@@ -305,6 +560,17 @@ namespace SDFTerrain.Terrain
             // correct, and never misses an affected chunk.
             edit.GetBoundingBox(out float brushMinX, out float brushMaxX,
                 out float brushMinY, out float brushMaxY);
+
+            // Expand by Radius so the edit is indexed against all chunks its SDF cone
+            // can reach. Rectangle shapes don't include Radius in their bbox (the
+            // bbox is the shape extent), so expand here for indexing purposes.
+            if (edit.Shape == BrushShape.Rectangle)
+            {
+                brushMinX -= edit.Radius;
+                brushMaxX += edit.Radius;
+                brushMinY -= edit.Radius;
+                brushMaxY += edit.Radius;
+            }
 
             float chunkSize = _chunkGrid.ChunkSize;
             float gridMinX = -(_chunkGrid.Cols * chunkSize) / 2f;
@@ -774,6 +1040,159 @@ namespace SDFTerrain.Terrain
                     IndexEdit(i, _edits[i]);
                 }
             }
+        }
+
+        /// <summary>
+        /// Detects uniform chunks whose edits fully cover the chunk and replaces each with a
+        /// single rectangular edit. Call this to consolidate the edit list after heavy brushing
+        /// that creates large uniform regions. Each chunk bakes independently — neighboring chunks
+        /// are not combined.
+        /// </summary>
+        /// <param name="cellSize">Lattice cell size for sampling (must match the value used by
+        /// <see cref="CartesianChunkFieldSampler"/>).</param>
+        public void ConsolidateUniformRegions(float cellSize)
+        {
+            if (_editsByChunkKey == null)
+            {
+                throw new InvalidOperationException("ConsolidateUniformRegions requires EnableChunkIndexing to have been called first.");
+            }
+
+            if (cellSize <= 0f)
+            {
+                throw new ArgumentOutOfRangeException(nameof(cellSize), cellSize, "Cell size must be positive.");
+            }
+
+            // Create per-chunk rectangular edits for uniform covered regions.
+            // No longer merges adjacent rectangles — each chunk bakes independently.
+            CreateUniformRegionEdits(cellSize);
+        }
+
+        private void CreateUniformRegionEdits(float cellSize)
+        {
+            // Step 1: Sample all chunks to identify uniform ones covered by their edits.
+            var candidates = new List<TerrainChunk>();
+
+            foreach (TerrainChunk chunk in _chunkGrid.AllChunks)
+            {
+                var result = CartesianChunkFieldSampler.Sample(this, chunk, cellSize);
+
+                if (!result.IsUniform)
+                    continue;
+
+                long key = PackKey(chunk.Col, chunk.Row);
+                if (!_editsByChunkKey.TryGetValue(key, out List<int> editIndices))
+                    continue; // No edits → skip (uniform base terrain, not edit-covered)
+
+                if (!EditUnionCoversChunk(chunk, editIndices))
+                    continue; // Edits don't fully cover → not a candidate
+
+                candidates.Add(chunk);
+            }
+
+            if (candidates.Count == 0)
+                return;
+
+            // Step 2: Replace each candidate's edits with a single rectangle covering that chunk.
+            // Process individually — no flood-fill grouping of neighboring chunks.
+            foreach (TerrainChunk chunk in candidates)
+            {
+                // Re-fetch current edit indices — previous bakes may have modified the list.
+                long key = PackKey(chunk.Col, chunk.Row);
+                if (!_editsByChunkKey.TryGetValue(key, out List<int> editIndices))
+                    continue;
+
+                if (editIndices.Count == 0)
+                    continue;
+
+                // Skip if already baked.
+                bool alreadyBaked = false;
+                foreach (int idx in editIndices)
+                {
+                    if (idx >= 0 && idx < _edits.Count && _edits[idx].Shape == BrushShape.Rectangle)
+                    {
+                        alreadyBaked = true;
+                        break;
+                    }
+                }
+                if (alreadyBaked)
+                    continue;
+
+                // Determine solidity from current samples.
+                var sampleResult = CartesianChunkFieldSampler.Sample(this, chunk, cellSize);
+
+                Vector2 bottomLeft = new Vector2(chunk.MinX, chunk.MinY);
+                Vector2 topRight = new Vector2(chunk.MaxX, chunk.MaxY);
+                float diagonal = Mathf.Sqrt(
+                    (chunk.MaxX - chunk.MinX) * (chunk.MaxX - chunk.MinX) +
+                    (chunk.MaxY - chunk.MinY) * (chunk.MaxY - chunk.MinY));
+                float radius = diagonal * 2f;
+
+                TerrainEdit bakeEdit = new TerrainEdit(
+                    bottomLeft, topRight, radius, !sampleResult.IsSolid, BrushShape.Rectangle, clamped: true);
+
+                // Remove old edits and add the baked edit. BakeChunk handles index remapping.
+                BakeChunk(chunk, editIndices, bakeEdit);
+            }
+        }
+
+        /// <summary>
+        /// Checks whether the union of the given edits' shapes fully covers the chunk.
+        /// Uses shape distance (not bounding boxes) so circles and capsules correctly
+        /// cover their actual footprint rather than conservative square bboxes.
+        /// </summary>
+        private bool EditUnionCoversChunk(TerrainChunk chunk, List<int> editIndices)
+        {
+            if (editIndices.Count == 0)
+                return false;
+
+            // Quick check: if a single edit's shape covers the chunk entirely, we're done.
+            // For rectangles this is exact; for circles/capsules it's a conservative shortcut.
+            for (int i = 0; i < editIndices.Count; i++)
+            {
+                TerrainEdit edit = _edits[editIndices[i]];
+                if (edit.Shape == BrushShape.Rectangle)
+                {
+                    float rectMinX = Mathf.Min(edit.LocalPosition.x, edit.EndPosition.x);
+                    float rectMaxX = Mathf.Max(edit.LocalPosition.x, edit.EndPosition.x);
+                    float rectMinY = Mathf.Min(edit.LocalPosition.y, edit.EndPosition.y);
+                    float rectMaxY = Mathf.Max(edit.LocalPosition.y, edit.EndPosition.y);
+                    if (rectMinX <= chunk.MinX && rectMaxX >= chunk.MaxX &&
+                        rectMinY <= chunk.MinY && rectMaxY >= chunk.MaxY)
+                        return true;
+                }
+            }
+
+            // Grid-based coverage test: divide the chunk into a small grid and check
+            // if every cell is covered by at least one edit's shape (distance <= radius).
+            int gridRes = 4;
+            float cellW = (chunk.MaxX - chunk.MinX) / gridRes;
+            float cellH = (chunk.MaxY - chunk.MinY) / gridRes;
+
+            for (int gx = 0; gx < gridRes; gx++)
+            {
+                for (int gy = 0; gy < gridRes; gy++)
+                {
+                    float cx = chunk.MinX + (gx + 0.5f) * cellW;
+                    float cy = chunk.MinY + (gy + 0.5f) * cellH;
+                    bool covered = false;
+
+                    for (int i = 0; i < editIndices.Count; i++)
+                    {
+                        TerrainEdit edit = _edits[editIndices[i]];
+                        float dist = edit.DistanceToShape(new Vector2(cx, cy));
+                        if (dist <= edit.Radius)
+                        {
+                            covered = true;
+                            break;
+                        }
+                    }
+
+                    if (!covered)
+                        return false;
+                }
+            }
+
+            return true;
         }
     }
 }

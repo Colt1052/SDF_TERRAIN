@@ -17,6 +17,18 @@ namespace SDFTerrain.Terrain
         public float MaxY { get; }
         public bool IsDirty { get; private set; }
 
+        /// <summary>
+        /// True when all lattice samples within this chunk have the same sign (all solid or all air).
+        /// Set by the sampler after sampling.
+        /// </summary>
+        public bool IsUniform { get; set; }
+
+        /// <summary>
+        /// True when this chunk is uniformly solid (all samples negative). Only meaningful when
+        /// <see cref="IsUniform"/> is true.
+        /// </summary>
+        public bool IsSolid { get; set; }
+
         public TerrainChunk(int index, int col, int row, float minX, float maxX, float minY, float maxY)
         {
             Index = index;

@@ -316,5 +316,22 @@ namespace SDFTerrain.Terrain
             chunk = null;
             return false;
         }
+
+        /// <summary>
+        /// Returns the 4-directional neighboring chunks for the given chunk.
+        /// Missing neighbors (edge of the grid) are omitted.
+        /// </summary>
+        public List<TerrainChunk> GetAdjacentChunks(TerrainChunk chunk)
+        {
+            var result = new List<TerrainChunk>(4);
+            foreach (ChunkNeighbor dir in new[]
+                { ChunkNeighbor.Top, ChunkNeighbor.Bottom, ChunkNeighbor.Left, ChunkNeighbor.Right })
+            {
+                TerrainChunk neighbor = GetNeighbor(chunk, dir);
+                if (neighbor != null)
+                    result.Add(neighbor);
+            }
+            return result;
+        }
     }
 }

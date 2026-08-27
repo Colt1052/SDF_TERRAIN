@@ -13,6 +13,7 @@ namespace SDFTerrain.Terrain
     {
         Circle = 0,
         Capsule = 1,
+        Rectangle = 2,
     }
 
     /// <summary>
@@ -82,6 +83,16 @@ namespace SDFTerrain.Terrain
                 minY = Mathf.Min(LocalPosition.y, EndPosition.y) - Radius;
                 maxY = Mathf.Max(LocalPosition.y, EndPosition.y) + Radius;
             }
+            else if (Shape == BrushShape.Rectangle)
+            {
+                // Rectangle shape: the corners define the shape extent.
+                // Unlike Circle/Capsule, Radius is an SDF magnitude parameter,
+                // not a spatial extent — so the bounding box is just the corners.
+                minX = Mathf.Min(LocalPosition.x, EndPosition.x);
+                maxX = Mathf.Max(LocalPosition.x, EndPosition.x);
+                minY = Mathf.Min(LocalPosition.y, EndPosition.y);
+                maxY = Mathf.Max(LocalPosition.y, EndPosition.y);
+            }
             else
             {
                 minX = LocalPosition.x - Radius;
@@ -98,9 +109,27 @@ namespace SDFTerrain.Terrain
         /// </summary>
         public float DistanceToShape(Vector2 localPosition)
         {
-            return Shape == BrushShape.Capsule
-                ? DistanceToSegment(localPosition, LocalPosition, EndPosition)
-                : Vector2.Distance(localPosition, LocalPosition);
+            if (Shape == BrushShape.Capsule)
+            {
+                return DistanceToSegment(localPosition, LocalPosition, EndPosition);
+            }
+
+            if (Shape == BrushShape.Rectangle)
+            {
+                // Unsigned distance to the rectangle boundary.
+                // LocalPosition = bottom-left, EndPosition = top-right.
+                float rectMinX = Mathf.Min(LocalPosition.x, EndPosition.x);
+                float rectMaxX = Mathf.Max(LocalPosition.x, EndPosition.x);
+                float rectMinY = Mathf.Min(LocalPosition.y, EndPosition.y);
+                float rectMaxY = Mathf.Max(LocalPosition.y, EndPosition.y);
+
+                float dx = Mathf.Max(rectMinX - localPosition.x, 0f, localPosition.x - rectMaxX);
+                float dy = Mathf.Max(rectMinY - localPosition.y, 0f, localPosition.y - rectMaxY);
+                return Mathf.Sqrt(dx * dx + dy * dy);
+            }
+
+            // Circle
+            return Vector2.Distance(localPosition, LocalPosition);
         }
 
         /// <summary>
@@ -129,9 +158,13 @@ namespace SDFTerrain.Terrain
             float magnitude = Radius - dist;
             float contribution = IsAdditive ? magnitude : -magnitude;
 
-            // Clamped edits skip outside the brush circle so both removal and placement
+            // Clamped edits skip outside the brush so both removal and placement
             // affect the exact same area, making them 1:1 reversible.
-            if (Clamped && dist > Radius)
+            bool outsideBrush = Shape == BrushShape.Rectangle
+                ? dist > 0f  // Rectangle: dist is distance to rect boundary; >0 means outside
+                : dist > Radius;  // Circle/Capsule: outside the radial extent
+
+            if (Clamped && outsideBrush)
             {
                 // Return a value that Max/Min naturally ignores:
                 // - For additive (Max combine): -infinity is ignored.

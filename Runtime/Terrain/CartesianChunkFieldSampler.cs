@@ -24,11 +24,15 @@ namespace SDFTerrain.Terrain
         {
             public readonly float[,] Samples;
             public readonly Vector2[,] Positions;
+            public readonly bool IsUniform;
+            public readonly bool IsSolid;
 
-            public Result(float[,] samples, Vector2[,] positions)
+            public Result(float[,] samples, Vector2[,] positions, bool isUniform, bool isSolid)
             {
                 Samples = samples;
                 Positions = positions;
+                IsUniform = isUniform;
+                IsSolid = isSolid;
             }
         }
 
@@ -91,7 +95,36 @@ namespace SDFTerrain.Terrain
                 }
             }
 
-            return new Result(samples, positions);
+            // Determine uniformity: a chunk is uniform when all samples have the same sign.
+            // isSolid tracks "all samples so far are < 0" (solid).
+            // allAir tracks "all samples so far are >= 0" (air).
+            // When both become false, we've seen a mix → not uniform.
+            bool isSolid = true;
+            bool allAir = true;
+
+            for (int i = 0; i < width; i++)
+            {
+                for (int j = 0; j < height; j++)
+                {
+                    if (samples[i, j] < 0f)
+                    {
+                        allAir = false;
+                    }
+                    else
+                    {
+                        isSolid = false;
+                    }
+
+                    // Both false → mixed solid/air, can stop early.
+                    if (!allAir && !isSolid)
+                        goto uniformDone;
+                }
+            }
+
+        uniformDone:
+            bool isUniform = isSolid || allAir;
+
+            return new Result(samples, positions, isUniform, isSolid);
         }
     }
 }
