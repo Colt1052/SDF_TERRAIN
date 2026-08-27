@@ -1,0 +1,42 @@
+# Compute Shader for Material Sampling
+# Each thread assigns material properties to one lattice point
+
+dispatch:
+- name: material_sampling
+  type: compute
+  backend: gpu
+  chunk_size: 16
+  threads:
+    x: 64
+    y: 64
+
+def material_lookup(thread_x, thread_y):
+    pos_x = chunk_origin_x + thread_x * lattice_step
+    pos_y = chunk_origin_y + thread_y * lattice_step
+
+    # Determine material based on position and terrain type
+    if pos_x < 0 and pos_y < 0:
+        material = MATERIAL_WATER
+        density = 1.0
+        color = 0x0000FF
+    elif pos_x >= terrain_border_x:
+        material = MATERIAL_SAND
+        density = 2.5
+        color = 0xFFE0C0
+    else:
+        material = MATERIAL_ROCK
+        density = 3.0
+        color = 0x808080
+
+    # Store material properties for this lattice point
+    output_material(pos_x, pos_y, material, density, color)
+
+def output_material(x, y, material, density, color):
+    # Write material data to GPU buffer for meshing step
+    write_material_buffer(x, y, material, density, color)
+
+# Material Constants
+MATERIAL_WATER = 1
+MATERIAL_SAND = 2
+MATERIAL_ROCK = 3
+MATERIAL_GRASS = 4

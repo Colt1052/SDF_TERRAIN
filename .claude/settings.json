@@ -1,0 +1,12 @@
+{
+  "terrain": {
+    "backend": "gpu_compute",
+    "max_parallel_chunks": 16,
+    "gpu": {
+      "compute_shader": "sdf_sampling.compute",
+      "chunk_size": 16,
+      "threads_x": 64,
+      "threads_y": 64
+    }
+  }
+}

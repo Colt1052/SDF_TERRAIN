@@ -1,0 +1,7 @@
+# Terrain Edit Data Structure
+# Format: position_x,position_y,radius,additive_flag
+
+0.0,0.0,100.0,1
+10.0,0.0,50.0,0
+0.0,10.0,75.0,1
+10.0,10.0,60.0,0
