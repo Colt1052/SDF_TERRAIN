@@ -106,6 +106,13 @@ namespace SDFTerrain.Terrain
             sdfDebugView.Initialize(field, radius);
             gridDebugView.Initialize(field, chunkGrid, renderer.CellSize);
 
+            // Game-view debug overlay (FPS, edit count)
+            var gameDebugOverlay = GetComponent<GameDebugOverlay>();
+            if (gameDebugOverlay != null)
+            {
+                gameDebugOverlay.Initialize(field);
+            }
+
             // MaterialDebugView — visualize material distribution
             var materialDebugView = GetComponent<MaterialDebugView>();
             if (materialDebugView != null)

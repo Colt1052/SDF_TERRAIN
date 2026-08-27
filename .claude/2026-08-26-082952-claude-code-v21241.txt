@@ -1,0 +1,1490 @@
+           Claude Code v2.1.246
+ ▐▛███▛█   /home/colton/Desktop/LLama/Qwen3.6-27B-UD-Q8_K_XL-MTP.gguf
+▝▜██████▀  API Usage Billing
+  ▝▝ ▝▝    ~\SDFPlanet\Assets\SDF_Terrain\.claude
+
+
+❯            Claude Code v2.1.241                                               
+   ▐▛███▛█   /home/colton/Desktop/LLama/Qwen3.6-27B-UD-Q8_K_XL-MTP.gguf         
+  ▝▜██████▀  API Usage Billing                                                  
+    ▝▝ ▝▝    ~\SDFPlanet\Assets\SDF_Terrain                                     
+                                                                                
+                                                                                
+  ❯ /clear                                                                      
+                                                                                
+                                                                                
+  ❯ To clean up the ever increasing edits lists, I want to bake them into the   
+  SDF                                                                           
+    when it is easiest to, when an edit is in either solid terrain or solid     
+  air.                                                                          
+     This should mean that floating point estimation for the SDF isn't a        
+  problem                                                                       
+    right? Should be easy to bake into the base SDF, let me know what you       
+  think.                                                                        
+                                                                                
+    Thought for 4m 15s (ctrl+o to expand)                                       
+                                                                                
+  ● You're broadly right on the intuition — there's a real opportunity here,    
+  but                                                                           
+    the "solid air" case has a subtlety worth thinking through before           
+    implementation.                                                             
+                                                                                
+    Why it works for solid terrain                                              
+                                                                                
+    When an edit is deep in solid terrain (SDF << 0, say < -0.1 or some         
+    threshold), baking it into the base is low-risk:                            
+                                                                                
+    - No surface to perturb. The zero-crossing is far away, so floating-point   
+      noise in the baked value can't shift the boundary into visible error.     
+    - Edits in solid are usually subtractive (carving tunnels, caves). You're   
+      replacing min(base, edit) with a new base that already encodes the carve. 
+      Since both values are large negatives, min() is well-behaved numerically. 
+    - Irreversible by nature. Once carved, that region stays carved unless      
+      explicitly filled back in — which would be a new edit that starts fresh.  
+                                                                                
+    The solid air case is trickier                                              
+                                                                                
+    When an edit is deep in air (SDF >> 0), adding terrain (like painting a     
+    mountain peak or bridge) into empty space:                                  
+                                                                                
+    - The edit itself creates a new surface. You're not just modifying an       
+  existing                                                                      
+      boundary — you're introducing new geometry with its own zero-crossing.    
+      Baking this means committing that new surface into the base SDF as if it  
+      were "natural" terrain.                                                   
+    - This is fine if the edit is self-contained — i.e., the entire edit        
+  including                                                                     
+      its surface is in a region you're baking. The floating-point precision of 
+      the base SDF evaluation just needs to be good enough to represent that    
+  new                                                                           
+      surface.                                                                  
+    - The concern arises at the edges of the edit brush. If a brush stroke      
+  extends                                                                       
+      into a region where the base SDF is also non-zero (say, you paint a ridge 
+      that connects to existing terrain), the blend zone needs to be baked too. 
+  If                                                                            
+      you only bake the "clearly air" portion, you get a seam.                  
+                                                                                
+    The real threshold question                                                 
+                                                                                
+    The practical design is:                                                    
+                                                                                
+    ▎ An edit is bake-eligible when, over the entire spatial extent the edit    
+    ▎ affects, the resulting SDF surface is unchanged AND the edit's influence  
+  is                                                                            
+    ▎ below some epsilon everywhere near any existing surface.                  
+                                                                                
+    Concretely, for a volume cell or region:                                    
+    - If |resulting_SDF| > threshold everywhere in the region (no zero-crossing 
+      inside), and                                                              
+    - The edit contributed to that region                                       
+                                                                                
+    ...then that region can be baked. The threshold should be comfortably       
+  larger                                                                        
+    than floating-point noise (e.g., 0.01–0.05 world units, depending on your   
+    scale).                                                                     
+                                                                                
+    What I'd recommend                                                          
+                                                                                
+    1. Start with solid-only baking. Carved tunnels and caves are the most      
+  common                                                                        
+       repetitive edits, and they're the safest case. Get the infrastructure    
+       working here first.                                                      
+    2. Define a "bake threshold" as a configurable parameter — not hardcode it. 
+       Something like minimumDistanceFromSurfaceToBake = 0.05f.                 
+    3. Bake at evaluation time, not edit time. When you evaluate the SDF for    
+       meshing (or for a cache/volume), if a cell's edit contribution is in the 
+       bake-eligible zone, write it into a persistent base cache rather than    
+       keeping it in the edit list. Then remove it from the live edit list.     
+    4. Handle the "edit undoes another edit" case. If edit B fills in what edit 
+  A                                                                             
+       carved, and A hasn't been baked yet, cancel both. Don't bake             
+  intermediate                                                                  
+       states.                                                                  
+    5. Deferred baking. Don't bake immediately. Let the user keep editing. Bake 
+       during idle moments or when the edit list exceeds some size threshold.   
+  This                                                                          
+       avoids committing geometry the user might soon modify.                   
+                                                                                
+    Bottom line                                                                 
+                                                                                
+    Yes, floating-point precision is not the problem you think it is — it's     
+  only a                                                                        
+    problem near the zero-crossing, and by definition you're avoiding those     
+    regions. The real challenges are:                                           
+    - Seam management at the boundary between baked and unbaked regions         
+    - Edit lifecycle (undo, overlapping edits, edits that modify already-baked  
+      regions)                                                                  
+    - Choosing the bake threshold so you don't lose detail                      
+                                                                                
+    Want me to look at the current edit system architecture and sketch out      
+  where                                                                         
+    this would fit?                                                             
+                                                                                
+  ✻ Baked for 4m 15s                                                            
+                                                                                
+  ❯ I think you misunderstand.  I want to only keep edits that change the       
+  outline                                                                       
+    of the terrain, and bake edits that are on the interior or exterior of the  
+                                                                                
+    terrain, since their effect on the resulting geometry is nothing.  I'm      
+                                                                                
+    thinking of a mining edit, that is now in empty space because a larger      
+  mining                                                                        
+    edit took out a larger chunk.  Or a building edit that is now entirely      
+                                                                                
+    encapsulated by terrain, because it was built over by a later command.  I   
+                                                                                
+    would think that the most efficient use of the edits list, is to remove     
+  these                                                                         
+    edits and bake the solid or empty terrain into the SDF.  I would think we   
+                                                                                
+    only need edits for actively shaping the terrain at the boundary between    
+                                                                                
+    terrain and air.  Let me know what you think                                
+                                                                                
+                                                                                
+    Thought for 1m 47s (ctrl+o to expand)                                       
+                                                                                
+  ● Ah, now I see — this is edit garbage collection, not baking in the          
+  geometric                                                                     
+    sense. You're right, and it's a cleaner problem than I initially thought.   
+                                                                                
+    Two removal cases                                                           
+                                                                                
+    Interior edit (buried): A building edit is now entirely encapsulated by     
+  solid                                                                         
+    terrain. The base SDF (or a later, larger building edit) dominates          
+  everywhere                                                                    
+    in that region. Removing it changes nothing because min(base, buried_edit)  
+  =                                                                             
+    base everywhere that matters.                                               
+                                                                                
+    Exterior edit (enveloped): A small mining edit is now entirely inside a     
+  larger                                                                        
+    mined-out cavity. The larger edit already made everything air. Removing the 
+    small edit changes nothing because min(large_mine, small_mine) = large_mine 
+    everywhere.                                                                 
+                                                                                
+    In both cases the edit is a no-op — it doesn't affect the composite SDF at  
+    all. Removing it is free and lossless.                                      
+                                                                                
+    The "bake" language                                                         
+                                                                                
+    For the interior case, "bake into the SDF" is accurate — the base SDF       
+  already                                                                       
+    describes that region, so dropping the edit just lets the base take over.   
+                                                                                
+    For the exterior case, there's nothing to bake — you're just deleting a     
+    redundant entry. The dominant edit (the bigger mine) already handles the    
+    geometry.                                                                   
+                                                                                
+    So really: scan the edit list, identify no-ops, delete them.                
+                                                                                
+    The practical questions                                                     
+                                                                                
+    Threshold: You need a cleanupDepth parameter — how deep in solid/air before 
+  an                                                                            
+    edit qualifies. E.g., every point the edit affects must have |final_SDF| >  
+    cleanupDepth AND the edit must not be the reason for that value.            
+                                                                                
+    Safety with undo: This is the real gotcha. If you purge an old mining edit  
+    because a newer one envelopes it, then the user undoes the newer edit — the 
+    old one is gone and should come back. Either:                               
+    - Only purge after undo history is truncated (e.g., user saves/checkpoints) 
+    - Or track purged edits per region and restore them if a dominating edit is 
+      undone                                                                    
+                                                                                
+    When to run: Not every frame. Run during idle, or when the edit count       
+  crosses                                                                       
+    a threshold, or explicitly triggered.                                       
+                                                                                
+    How to check: For each candidate edit, sample the SDF over its spatial      
+  extent                                                                        
+    (excluding that edit from the composite). If every sample shows the edit    
+  has                                                                           
+    no effect on the result → safe to remove.                                   
+                                                                                
+    Verdict                                                                     
+                                                                                
+    Solid idea. The math is straightforward — you're removing identity elements 
+    from a min-composition. No floating-point issues because you're not         
+  changing                                                                      
+    any geometry. The implementation work is in the spatial checking, the undo  
+    safety, and deciding when to run the sweep.                                 
+                                                                                
+    Want me to look at the current edit system code to sketch where this fits?  
+                                                                                
+  ✻ Churned for 1m 47s                                                          
+                                                                                
+  ❯ Yes you're right, I was misusing the term bake there.  We should start by   
+                                                                                
+    only detecting and removing useless edits first.  Make a plan.              
+                                                                                
+                                                                                
+  ⎿  ⧉ Selected 175 lines from ..\BeforeReset.txt in Visual Studio Code
+
+  Thought for 3m 8s (ctrl+o to expand)
+
+● Let me understand the current edit system before sketching a plan. I'll read
+  the key docs and search for the relevant code in parallel.
+
+  Thought for 38s, searched for 1 pattern, read 3 files (ctrl+o to expand)
+
+● Now let me read the core edit files — TerrainEdit and TerrainField — and the
+  test files for context.
+
+  Thought for 50s, read 4 files (ctrl+o to expand)
+
+● Let me also check the existing tests and the task archive for edit-related
+  history.
+
+  Thought for 2m 5s, searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Now I have a thorough understanding of the codebase. Let me write up the plan.
+
+  The key pieces:
+  - TerrainField owns the edit list (_edits) and chunk spatial index
+    (_editsByChunkKey)
+  - TerrainEdit is a struct: position, radius, isAdditive, shape
+    (Circle/Capsule), clamped
+  - CSG composition: digs use Max, builds use Min — idempotent, commutative
+  - PruneDeadEdits() already exists — removes zero-radius edits (from
+    smoothing), compacts list, remaps chunk indices atomically
+  - Sampling scans only chunk-local edits via spatial index
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+  Thought for 2m 21s (ctrl+o to expand)
+
+● I already have a thorough understanding of the codebase from my earlier reads.
+  Let me write the plan document now.
+
+● Updated plan
+  ⎿  /plan to preview
+
+  Thought for 5s (ctrl+o to expand)
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Plan: Detect and Remove Redundant Edits                                 │
+     │                                                                         │
+     │ Context                                                                 │
+     │                                                                         │
+     │ The edit list grows monotonically — every brush stroke adds a           │
+     │ TerrainEdit that stays in memory and gets evaluated during sampling.    │
+     │ Many of these edits become no-ops over time: a small dig entirely       │
+     │ inside a larger cavity, or a build entirely buried under later terrain. │
+     │ These edits contribute zero to the final SDF but still cost CPU time    │
+     │ on every sample. This task adds a sweep that finds and removes them,    │
+     │ leaving only edits that actively shape the terrain boundary.            │
+     │                                                                         │
+     │ Approach                                                                │
+     │                                                                         │
+     │ Add PruneRedundantEdits() to TerrainField. For each edit, sample the    │
+     │ SDF across the edit's footprint with and without that edit. If the      │
+     │ result is identical everywhere (outside a configurable threshold near   │
+     │ the surface), the edit is redundant and safe to remove. The             │
+     │ compact-and-remap pattern is borrowed from the existing                 │
+     │ PruneDeadEdits().                                                       │
+     │                                                                         │
+     │ Why this is correct                                                     │
+     │                                                                         │
+     │ CSG composition uses Max (digs/additive) and Min (builds/non-additive). │
+     │ These are commutative — the order edits are applied doesn't matter.     │
+     │ Removing an edit is safe if and only if, at every point in the edit's   │
+     │ spatial extent, the edit's contribution is dominated by the base SDF or │
+     │ by other edits. By sampling the SDF both ways and comparing, we         │
+     │ directly test this dominance condition.                                 │
+     │                                                                         │
+     │ Sample-based, not exhaustive                                            │
+     │                                                                         │
+     │ We sample on a grid within the edit's bounding box rather than checking │
+     │ every point. This is practical because:                                 │
+     │ - The SDF is continuous and piecewise smooth — if an edit is redundant  │
+     │   at the sample resolution, it's redundant everywhere (the chance of a  │
+     │   narrow "island" of effect between sample points is negligible for     │
+     │   reasonable brush sizes).                                              │
+     │ - The existing GetSolidAreaInCircle() already uses the same             │
+     │   grid-sampling pattern (16x16 default).                                │
+     │                                                                         │
+     │ Implementation                                                          │
+     │                                                                         │
+     │ 1. New method: TerrainField.PruneRedundantEdits(float                   │
+     │ minDistanceFromSurface, int samplesPerAxis)                             │
+     │                                                                         │
+     │ File: Runtime/Terrain/TerrainField.cs                                   │
+     │                                                                         │
+     │ Algorithm (per edit):                                                   │
+     │   1. Get the edit's bounding box via edit.GetBoundingBox()              │
+     │   2. Build a sample grid (samplesPerAxis x samplesPerAxis) over the     │
+     │ bbox                                                                    │
+     │   3. For each sample point:                                             │
+     │      a. Compute SDF WITH the candidate edit (current composite)         │
+     │      b. Compute SDF WITHOUT the candidate edit (skip it during the edit │
+     │ loop)                                                                   │
+     │      c. If |with - without| > epsilon at any point where |SDF without|  │
+     │ > minDistanceFromSurface:                                               │
+     │         → Edit is NOT redundant; stop checking this edit and move on    │
+     │   4. If all samples pass → mark edit for removal                        │
+     │                                                                         │
+     │ After all edits are checked, compact _edits and remap _editsByChunkKey  │
+     │ in one atomic pass (same pattern as PruneDeadEdits).                    │
+     │                                                                         │
+     │ Parameters:                                                             │
+     │ - minDistanceFromSurface (default: 0.05): Only edits whose footprint is │
+     │   at least this far from any surface are considered for removal.        │
+     │   Prevents false positives near the zero-crossing where floating-point  │
+     │   noise could misclassify.                                              │
+     │ - samplesPerAxis (default: 16): Grid resolution for sampling. Higher =  │
+     │   more accurate, slower.                                                │
+     │                                                                         │
+     │ Returns: int — number of edits removed (same contract as                │
+     │ PruneDeadEdits).                                                        │
+     │                                                                         │
+     │ 2. Helper: ComputeSDFWithoutEdit(Vector2 position, int editToSkip)      │
+     │                                                                         │
+     │ File: Runtime/Terrain/TerrainField.cs (private)                         │
+     │                                                                         │
+     │ Computes the full SDF at a position, skipping one edit by index. This   │
+     │ avoids the O(n) edit list scan at each sample point being doubled — the │
+     │ caller (the pruning loop) can share the "without" computation across    │
+     │ multiple sample points for the same candidate.                          │
+     │                                                                         │
+     │ For chunk-indexed fields, this method uses the chunk-local index to     │
+     │ reduce the scan from O(all edits) to O(chunk edits), giving O(n × k ×   │
+     │ s) complexity where n = edit count, k = average chunk-local edits       │
+     │ (typically << n), and s = sample count per edit.                        │
+     │                                                                         │
+     │ 3. Tests                                                                │
+     │                                                                         │
+     │ File: Tests/EditMode/TerrainFieldTests.cs (new tests added to existing  │
+     │ file)                                                                   │
+     │                                                                         │
+     │ ┌──────────────────────────────────┬─────────────────────────────────── │
+     │ ───┐                                                                    │
+     │ │               Test               │               Verifies             │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Small dig inside larger dig is   │ Redundant remove edit in enveloped │
+     │   │                                                                     │
+     │ │ removed                          │ cavity                             │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Build buried by later larger     │ Redundant build edit dominated by  │
+     │   │                                                                     │
+     │ │ build is removed                 │ base SDF                           │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Build buried by later terrain    │ Redundant build edit dominated by  │
+     │   │                                                                     │
+     │ │ edit is removed                  │ another edit                       │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Edit near surface is NOT removed │ Safety: edits affecting the        │
+     │ boundary │                                                              │
+     │ │                                  │  are preserved                     │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Unique dig is NOT removed        │ Safety: an edit that is the sole   │
+     │   │                                                                     │
+     │ │                                  │ carver is kept                     │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Multiple redundant edits removed │ Bulk operation correctness         │
+     │   │                                                                     │
+     │ │  in one sweep                    │                                    │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Sampling unchanged after prune   │ End-to-end correctness: SDF is     │
+     │   │                                                                     │
+     │ │                                  │ identical before/after             │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Chunk-indexed sampling matches   │ Spatial index consistency          │
+     │ preserved  │                                                            │
+     │ │ after prune                      │                                    │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Empty field is safe              │ No-op on zero edits                │
+     │   │                                                                     │
+     │ ├──────────────────────────────────┼─────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Capsule-shaped redundant edit    │ Shape-agnostic correctness         │
+     │   │                                                                     │
+     │ │ removed                          │                                    │
+     │   │                                                                     │
+     │ └──────────────────────────────────┴─────────────────────────────────── │
+     │ ───┘                                                                    │
+     │                                                                         │
+     │ 4. No public API yet — no trigger mechanism                             │
+     │                                                                         │
+     │ The method exists but is not called automatically. Integration points   │
+     │ (idle callback, threshold-based trigger, undo safety) are deferred to   │
+     │ the undo system (Task 16) and a future optimization pass. This keeps    │
+     │ the change self-contained and testable.                                 │
+     │                                                                         │
+     │ Files Modified                                                          │
+     │                                                                         │
+     │ - Runtime/Terrain/TerrainField.cs — Add PruneRedundantEdits() and       │
+     │   private helper                                                        │
+     │ - Tests/EditMode/TerrainFieldTests.cs — Add ~10 test methods            │
+     │                                                                         │
+     │ Risks & Mitigations                                                     │
+     │                                                                         │
+     │ ┌─────────────────────────────┬──────────────────────────────────────── │
+     │ ───┐                                                                    │
+     │ │            Risk             │                Mitigation               │
+     │   │                                                                     │
+     │ ├─────────────────────────────┼──────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Sample resolution too low → │ Configurable samplesPerAxis; tests use  │
+     │   │                                                                     │
+     │ │  false positive removal     │ high resolution to verify               │
+     │   │                                                                     │
+     │ ├─────────────────────────────┼──────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Performance: O(n × k × s)   │ Chunk indexing bounds k; method is not  │
+     │   │                                                                     │
+     │ │ for large edit counts       │ auto-called yet; future idle scheduling │
+     │   │                                                                     │
+     │ ├─────────────────────────────┼──────────────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ Future undo breaks after    │ Documented limitation; undo integration │
+     │   │                                                                     │
+     │ │ prune                       │ deferred to Task 16                     │
+     │   │                                                                     │
+     │ └─────────────────────────────┴──────────────────────────────────────── │
+     │ ───┘                                                                    │
+     │                                                                         │
+     │ Verification                                                            │
+     │                                                                         │
+     │ 1. Run Unity Test Runner (EditMode) — all existing tests pass, new      │
+     │    tests pass.                                                          │
+     │ 2. Manual smoke test: Create a planet, make a small dig, then a larger  │
+     │    overlapping dig. Call PruneRedundantEdits(). Verify the small dig is │
+     │    removed and the terrain looks identical.                             │
+     │ 3. Verify chunk-indexed sampling matches full-scan sampling after       │
+     │    pruning (test covers this).                                          │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+  Thought for 2m 52s (ctrl+o to expand)
+
+● Good point. Let me think through the volume-based approach more carefully —
+  it's indeed more robust and reuses existing infrastructure.
+
+● Explore(Explore area estimation code)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Thought for 26s (ctrl+o to expand)
+
+● While waiting for that, let me re-examine GetSolidAreaInCircle more closely
+  and the excavation calculator:
+
+  Thought for 9m 30s, read 1 file (ctrl+o to expand)
+
+● Agent "Explore area estimation code" failed: Agent terminated early due to an
+API error: API Error: 400 All target providers failed.
+
+● The agent hit an API error, but I already have what I need from reading
+  GetSolidAreaInCircle and ExcavationCalculator directly. Let me think through
+  the volume-based approach carefully.
+
+  The math works cleanly:
+
+  For a dig (remove) edit, the SDF contribution is Radius - dist. For a build
+  edit, it's -(Radius - dist). Both are monotonic cones. If an edit is NOT
+  redundant, it shifts the zero-crossing within its footprint, which MUST change
+  the solid area. If it IS redundant, the zero-crossing doesn't move, so the
+  solid area is identical. The area comparison is mathematically equivalent to
+  the SDF comparison for linear SDF cones — no sampling gaps to miss things.
+
+  Let me verify the concrete cases mentally:
+
+  ┌───────────────────────┬─────────────────┬─────────────────┬────────────┐
+  │       Scenario        │   Solid Area    │   Solid Area    │ Redundant? │
+  │                       │ (without edit)  │   (with edit)   │            │
+  ├───────────────────────┼─────────────────┼─────────────────┼────────────┤
+  │ Small dig inside      │ 0% (all air)    │ 0% (all air)    │ ✓ Yes      │
+  │ larger cavity         │                 │                 │            │
+  ├───────────────────────┼─────────────────┼─────────────────┼────────────┤
+  │ Small dig deep in     │ 100% (all       │ <100% (hole     │ ✓ No       │
+  │ solid                 │ solid)          │ carved)         │            │
+  ├───────────────────────┼─────────────────┼─────────────────┼────────────┤
+  │ Build buried by later │ 100% (all       │ 100% (all       │ ✓ Yes      │
+  │  terrain              │ solid)          │ solid)          │            │
+  ├───────────────────────┼─────────────────┼─────────────────┼────────────┤
+  │ Build on surface      │ ~50% (surface   │ >50% (surface   │ ✓ No       │
+  │                       │ crosses)        │ pushed out)     │            │
+  ├───────────────────────┼─────────────────┼─────────────────┼────────────┤
+  │ Build in empty space, │ 0%              │ >0%             │ ✓ No       │
+  │  standing alone       │                 │                 │            │
+  └───────────────────────┴─────────────────┴─────────────────┴────────────┘
+
+  The area test is both necessary and sufficient. Let me update the plan:
+
+● Updated plan
+  ⎿  Error: 
+     anthropic/claude-ccr-h4f6c6c616d612f2f686f6d652f636f6c746f6e2f4465736b746f7
+     02f4c4c616d612f5177656e332e362d3237422d55442d51385f4b5f584c2e67677566 is 
+     temporarily unavailable (timed out), so auto mode cannot determine the 
+     safety of Write right now. Wait a moment and then try this action again. If
+     it keeps failing, continue with other tasks that don't require this action
+     and come back to it later. Note: reading files, searching code, and other 
+     read-only operations do not require the classifier and can still be used.
+
+  Thought for 4m 21s (ctrl+o to expand)
+
+● Updated plan
+  ⎿  Error: 
+     anthropic/claude-ccr-h4f6c6c616d612f2f686f6d652f636f6c746f6e2f4465736b746f7
+     02f4c4c616d612f5177656e332e362d3237422d55442d51385f4b5f584c2e67677566 is 
+     temporarily unavailable (timed out), so auto mode cannot determine the 
+     safety of Write right now. Wait a moment and then try this action again. If
+     it keeps failing, continue with other tasks that don't require this action
+     and come back to it later. Note: reading files, searching code, and other 
+     read-only operations do not require the classifier and can still be used.
+
+  Thought for 4m 3s (ctrl+o to expand)
+
+● Updated plan
+  ⎿  /plan to preview
+
+  Thought for 2m 51s (ctrl+o to expand)
+● Exited plan mode
+
+  Thought for 14s (ctrl+o to expand)
+
+● Approved — let me implement this. I'll start with the TerrainField changes.
+
+  Thought for 45s (ctrl+o to expand)
+
+● Let me re-read the relevant section of TerrainField.cs for precise editing:
+
+  Thought for 1m 0s, read 1 file (ctrl+o to expand)
+
+● Now I'll implement the changes. First, add the SampleAt private helper after
+  SurfaceRadiusAt:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Terrain\TerrainField.cs)
+  ⎿  Added 23 lines
+      103          }
+      104  
+      105          /// <summary>
+      106 +        /// Computes the SDF at <paramref name="localPosition"
+          +/>, optionally skipping one edit                              
+      107 +        /// by index. Used by area-based redundancy checks to 
+          +compare the field with and without                            
+      108 +        /// a specific edit. Pass <paramref name="excludeEditI
+          +ndex"/> as -1 to include all edits.                           
+      109 +        /// </summary>                                        
+      110 +        private float SampleAt(Vector2 localPosition, int excl
+          +udeEditIndex)                                                 
+      111 +        {                                                     
+      112 +            float angle = Core.RadialMath.AngleOf(localPositio
+          +n);                                                           
+      113 +            float distance = localPosition.magnitude - Surface
+          +RadiusAt(angle);                                              
+      114 +                                                              
+      115 +            for (int i = 0; i < _edits.Count; i++)            
+      116 +            {                                                 
+      117 +                if (i == excludeEditIndex)                    
+      118 +                    continue;                                 
+      119 +                                                              
+      120 +                TerrainEdit edit = _edits[i];                 
+      121 +                float contribution = edit.SampleContribution(l
+          +ocalPosition);                                                
+      122 +                distance = edit.IsAdditive ? Mathf.Max(distanc
+          +e, contribution) : Mathf.Min(distance, contribution);         
+      123 +            }                                                 
+      124 +                                                              
+      125 +            return distance;                                  
+      126 +        }                                                     
+      127 +                                                              
+      128 +        /// <summary>                                         
+      129          /// Finds the nearest terrain surface point within <pa
+           ramref name="radius"/> of
+      130          /// <paramref name="localPosition"/>. The surface is d
+           efined as the zero-crossing of the
+      131          /// SDF (where <see cref="Sample"/> returns zero).
+
+  Thought for 38s (ctrl+o to expand)
+
+● Now refactor Sample(Vector2) to use SampleAt:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Terrain\TerrainField.cs)
+  ⎿  Added 1 line, removed 26 lines
+      205          /// </summary>
+      206          public float Sample(Vector2 localPosition)
+      207          {
+      208 -            float angle = Core.RadialMath.AngleOf(localPositio
+          -n);                                                           
+      209 -            float distance = localPosition.magnitude - Surface
+          -RadiusAt(angle);                                              
+      210 -                                                              
+      211 -            for (int i = 0; i < _edits.Count; i++)            
+      212 -            {                                                 
+      213 -                TerrainEdit edit = _edits[i];                 
+      214 -                                                              
+      215 -                // No distance-based skip here: SampleContribu
+          -tion is now an unbounded linear                               
+      216 -                // field (unclamped past the brush radius), so
+          - far from the brush a dig's                                   
+      217 -                // contribution runs off toward -infinity (Max
+          - below naturally ignores it) and a                            
+      218 -                // build's runs off toward +infinity (Min natu
+          -rally ignores it) — the CSG combine                           
+      219 -                // self-limits without an explicit early-out, 
+          -and combining every edit                                      
+      220 -                // unconditionally keeps the field continuous 
+          -everywhere, which is what lets                                
+      221 -                // MarchingSquaresMesher's linear edge interpo
+          -lation reconstruct a smooth circle                            
+      222 -                // right up to and across the brush boundary. 
+      223 -                float contribution = edit.SampleContribution(l
+          -ocalPosition);                                                
+      224 -                                                              
+      225 -                // CSG-style combine, not a sum: a dig only ev
+          -er pushes distance toward air (never                          
+      226 -                // past the brush's own target), a build only 
+          -ever pushes it toward solid. This                             
+      227 -                // makes repeated/overlapping edits at the sam
+          -e spot idempotent (re-digging an                              
+      228 -                // already-empty spot has no further effect) i
+          -nstead of "melting" deeper the more                           
+      229 -                // strokes overlap, which a straight distance 
+          -+= contribution sum would do.                                 
+      230 -                distance = edit.IsAdditive ? Mathf.Max(distanc
+          -e, contribution) : Mathf.Min(distance, contribution);         
+      231 -            }                                                 
+      232 -                                                              
+      233 -            return distance;                                  
+      208 +            return SampleAt(localPosition, -1);               
+      209          }
+      210  
+      211          /// <summary>
+
+  Thought for 5m 13s (ctrl+o to expand)
+
+● Now extend GetSolidAreaInCircle with excludeEditIndex:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Terrain\TerrainField.cs)
+  ⎿  Added 35 lines, removed 2 lines
+      394          /// This is the same approach used by <see cref="Chunk
+           TerrainRenderer.ApplyBrush"/>
+      395          /// and <see cref="BrushAreaDelta"/> for tracking area
+            deltas.
+      396          /// </summary>
+      397 -        public float GetSolidAreaInCircle(Vector2 center, floa
+          -t radius, int sampleResolution = 16)                          
+      397 +        /// <param name="center">Center of the circular region
+          +.</param>                                                     
+      398 +        /// <param name="radius">Radius of the region.</param>
+      399 +        /// <param name="sampleResolution">Grid resolution alo
+          +ng each axis.</param>                                         
+      400 +        /// <param name="excludeEditIndex">If non-negative, sk
+          +ips the edit at this index during                             
+      401 +        /// sampling. Used by <see cref="PruneRedundantEdits"/
+          +> to compare area with and without                            
+      402 +        /// a candidate edit. Pass -1 (default) to include all
+          + edits.</param>                                               
+      403 +        public float GetSolidAreaInCircle(Vector2 center, floa
+          +t radius, int sampleResolution = 16, int excludeEditIndex = -1
+          +)                                                             
+      404          {
+      405              if (radius <= 0f) return 0f;
+      406              if (sampleResolution < 2) sampleResolution = 2;
+     ...
+      415                  {
+      416                      Vector2 pos = center + new Vector2(x, y);
+      417                      if (Vector2.Distance(pos, center) > radius
+           ) continue;
+      412 -                    if (Sample(pos) <= 0f)                    
+      418 +                    if (SampleAt(pos, excludeEditIndex) <= 0f)
+      419                          solidCount++;
+      420                  }
+      421              }
+     ...
+      423              return solidCount * areaPerSample;
+      424          }
+      425  
+      426 +        /// <summary>                                         
+      427 +        /// Measures the solid area inside a rectangular regio
+          +n using grid sampling.                                        
+      428 +        /// Used for capsule-shaped edits where the footprint 
+          +is not circular.                                              
+      429 +        /// </summary>                                        
+      430 +        private float GetSolidAreaInRect(float minX, float max
+          +X, float minY, float maxY,                                    
+      431 +            int samplesPerAxis, int excludeEditIndex)         
+      432 +        {                                                     
+      433 +            if (samplesPerAxis < 2) samplesPerAxis = 2;       
+      434 +                                                              
+      435 +            float stepX = (maxX - minX) / samplesPerAxis;     
+      436 +            float stepY = (maxY - minY) / samplesPerAxis;     
+      437 +            float areaPerSample = stepX * stepY;              
+      438 +            int solidCount = 0;                               
+      439 +                                                              
+      440 +            for (float y = minY; y <= maxY; y += stepY)       
+      441 +            {                                                 
+      442 +                for (float x = minX; x <= maxX; x += stepX)   
+      443 +                {                                             
+      444 +                    Vector2 pos = new Vector2(x, y);          
+      445 +                    if (SampleAt(pos, excludeEditIndex) <= 0f)
+      446 +                        solidCount++;                         
+      447 +                }                                             
+      448 +            }                                                 
+      449 +                                                              
+      450 +            return solidCount * areaPerSample;                
+      451 +        }                                                     
+      452 +                                                              
+      453          /// <summary>Removes all persisted edits, leaving only
+            the base sphere.</summary>
+      454          public void ClearEdits()
+      455          {
+
+  Thought for 4m 45s (ctrl+o to expand)
+
+● Now add PruneRedundantEdits. Let me read the current state of the file to find
+  the right insertion point:
+
+  Thought for 1m 25s, read 1 file (ctrl+o to expand)
+
+● Now add PruneRedundantEdits before ClearEdits:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\Terrain\TerrainField.cs)
+  ⎿  Added 114 lines
+      450              return solidCount * areaPerSample;
+      451          }
+      452  
+      453 +        /// <summary>                                         
+      454 +        /// Finds and removes edits that no longer affect the 
+          +terrain geometry. An edit is                                  
+      455 +        /// redundant when the solid area within its footprint
+          + is the same with and without                                 
+      456 +        /// that edit — meaning the edit does not shift any ze
+          +ro-crossing and is effectively                                
+      457 +        /// a no-op. For example, a small dig entirely inside 
+          +a larger mined cavity, or a                                   
+      458 +        /// build entirely buried under later terrain.        
+      459 +        /// </summary>                                        
+      460 +        /// <param name="samplesPerAxis">Grid resolution for a
+          +rea estimation. Higher = more                                 
+      461 +        /// accurate, slower. Default 16 is sufficient for mos
+          +t brush sizes.</param>                                        
+      462 +        /// <returns>The number of redundant edits removed.</r
+          +eturns>                                                       
+      463 +        public int PruneRedundantEdits(int samplesPerAxis = 16
+          +)                                                             
+      464 +        {                                                     
+      465 +            if (samplesPerAxis < 2) samplesPerAxis = 2;       
+      466 +                                                              
+      467 +            int count = _edits.Count;                         
+      468 +            bool[] isRedundant = new bool[count];             
+      469 +            int redundantCount = 0;                           
+      470 +                                                              
+      471 +            for (int i = 0; i < count; i++)                   
+      472 +            {                                                 
+      473 +                TerrainEdit edit = _edits[i];                 
+      474 +                                                              
+      475 +                // Skip zero-radius edits — they are handled b
+          +y PruneDeadEdits.                                             
+      476 +                if (edit.Radius <= 0f)                        
+      477 +                    continue;                                 
+      478 +                                                              
+      479 +                // Compute solid area within the edit's footpr
+          +int, with and without this edit.                              
+      480 +                float areaWith;                               
+      481 +                float areaWithout;                            
+      482 +                float footprintArea;                          
+      483 +                                                              
+      484 +                if (edit.Shape == BrushShape.Capsule && edit.L
+          +ocalPosition != edit.EndPosition)                             
+      485 +                {                                             
+      486 +                    // Use bounding box for capsule edits.    
+      487 +                    edit.GetBoundingBox(out float minX, out fl
+          +oat maxX, out float minY, out float maxY);                    
+      488 +                    areaWith = GetSolidAreaInRect(minX, maxX, 
+          +minY, maxY, samplesPerAxis, -1);                              
+      489 +                    areaWithout = GetSolidAreaInRect(minX, max
+          +X, minY, maxY, samplesPerAxis, i);                            
+      490 +                    float width = maxX - minX;                
+      491 +                    float height = maxY - minY;               
+      492 +                    footprintArea = width * height;           
+      493 +                }                                             
+      494 +                else                                          
+      495 +                {                                             
+      496 +                    // Use circular region for circle edits (a
+          +nd degenerate capsules).                                      
+      497 +                    areaWith = GetSolidAreaInCircle(edit.Local
+          +Position, edit.Radius, samplesPerAxis, -1);                   
+      498 +                    areaWithout = GetSolidAreaInCircle(edit.Lo
+          +calPosition, edit.Radius, samplesPerAxis, i);                 
+      499 +                    footprintArea = Mathf.PI * edit.Radius * e
+          +dit.Radius;                                                   
+      500 +                }                                             
+      501 +                                                              
+      502 +                // If the area difference is negligible (less 
+          +than 0.1% of footprint), the edit                             
+      503 +                // is redundant. This tolerance accounts for g
+          +rid-sampling quantization.                                    
+      504 +                float tolerance = footprintArea * 0.001f;     
+      505 +                if (Mathf.Abs(areaWith - areaWithout) < tolera
+          +nce)                                                          
+      506 +                {                                             
+      507 +                    isRedundant[i] = true;                    
+      508 +                    redundantCount++;                         
+      509 +                }                                             
+      510 +            }                                                 
+      511 +                                                              
+      512 +            if (redundantCount == 0)                          
+      513 +                return 0;                                     
+      514 +                                                              
+      515 +            // Compact _edits and remap chunk indices (same pa
+          +ttern as PruneDeadEdits).                                     
+      516 +            int writeIndex = 0;                               
+      517 +            int[] oldToNew = new int[count];                  
+      518 +                                                              
+      519 +            for (int i = 0; i < count; i++)                   
+      520 +            {                                                 
+      521 +                if (isRedundant[i])                           
+      522 +                {                                             
+      523 +                    oldToNew[i] = -1;                         
+      524 +                }                                             
+      525 +                else                                          
+      526 +                {                                             
+      527 +                    oldToNew[i] = writeIndex;                 
+      528 +                    if (writeIndex != i)                      
+      529 +                    {                                         
+      530 +                        _edits[writeIndex] = _edits[i];       
+      531 +                    }                                         
+      532 +                    writeIndex++;                             
+      533 +                }                                             
+      534 +            }                                                 
+      535 +                                                              
+      536 +            while (_edits.Count > writeIndex)                 
+      537 +            {                                                 
+      538 +                _edits.RemoveAt(_edits.Count - 1);            
+      539 +            }                                                 
+      540 +                                                              
+      541 +            // Remap chunk indices and remove references to pr
+          +uned edits.                                                   
+      542 +            if (_editsByChunkKey != null)                     
+      543 +            {                                                 
+      544 +                foreach (List<int> chunkList in _editsByChunkK
+          +ey.Values)                                                    
+      545 +                {                                             
+      546 +                    int w = 0;                                
+      547 +                    for (int r = 0; r < chunkList.Count; r++) 
+      548 +                    {                                         
+      549 +                        int oldIndex = chunkList[r];          
+      550 +                        int newIndex = oldToNew[oldIndex];    
+      551 +                        if (newIndex >= 0)                    
+      552 +                        {                                     
+      553 +                            chunkList[w] = newIndex;          
+      554 +                            w++;                              
+      555 +                        }                                     
+      556 +                    }                                         
+      557 +                    while (chunkList.Count > w)               
+      558 +                    {                                         
+      559 +                        chunkList.RemoveAt(chunkList.Count - 1
+          +);                                                            
+      560 +                    }                                         
+      561 +                }                                             
+      562 +            }                                                 
+      563 +                                                              
+      564 +            return redundantCount;                            
+      565 +        }                                                     
+      566 +                                                              
+      567          /// <summary>Removes all persisted edits, leaving only
+            the base sphere.</summary>
+      568          public void ClearEdits()
+      569          {
+
+  Thought for 19s (ctrl+o to expand)
+
+● Let me verify the file is coherent:
+
+  Thought for 31s, read 1 file (ctrl+o to expand)
+
+● The implementation looks correct. Now let me write the tests:
+
+  Thought for 2m 36s, read 1 file (ctrl+o to expand)
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Tests\EditMode\TerrainFieldTests.cs)
+  ⎿  Added 240 lines
+      459  
+      460              Assert.AreEqual(full, indexed, 1e-5f);
+      461          }
+      462 +                                                              
+      463 +        // ---- PruneRedundantEdits ----                      
+      464 +                                                              
+      465 +        [Test]                                                
+      466 +        public void PruneRedundantEdits_SmallDigInLargeCavity_
+          +Removed()                                                     
+      467 +        {                                                     
+      468 +            // A small dig entirely inside a larger mined cavi
+          +ty should be detected as redundant.                           
+      469 +            var field = new TerrainField(10f);                
+      470 +                                                              
+      471 +            // First, carve a large cavity at (5, 0) — this re
+          +moves terrain deeply.                                         
+      472 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 5f, isAdditive: true));                            
+      473 +                                                              
+      474 +            // Then, a small dig well inside that cavity.     
+      475 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 1f, isAdditive: true));                            
+      476 +                                                              
+      477 +            Assert.AreEqual(2, field.Edits.Count);            
+      478 +                                                              
+      479 +            int pruned = field.PruneRedundantEdits();         
+      480 +                                                              
+      481 +            Assert.AreEqual(1, pruned);                       
+      482 +            Assert.AreEqual(1, field.Edits.Count);            
+      483 +            // The large dig should remain.                   
+      484 +            Assert.AreEqual(5f, field.Edits[0].Radius);       
+      485 +        }                                                     
+      486 +                                                              
+      487 +        [Test]                                                
+      488 +        public void PruneRedundantEdits_DigInSolid_Kept()     
+      489 +        {                                                     
+      490 +            // A dig that actually carves solid terrain should
+          + NOT be removed.                                              
+      491 +            var field = new TerrainField(10f);                
+      492 +                                                              
+      493 +            // Dig at the center of the planet (deep in solid 
+          +terrain).                                                     
+      494 +            field.ApplyEdit(new TerrainEdit(Vector2.zero, radi
+          +us: 2f, isAdditive: true));                                   
+      495 +                                                              
+      496 +            int pruned = field.PruneRedundantEdits();         
+      497 +                                                              
+      498 +            Assert.AreEqual(0, pruned);                       
+      499 +            Assert.AreEqual(1, field.Edits.Count);            
+      500 +        }                                                     
+      501 +                                                              
+      502 +        [Test]                                                
+      503 +        public void PruneRedundantEdits_BuildBuriedByLaterEdit
+          +_Removed()                                                    
+      504 +        {                                                     
+      505 +            // A build edit that is entirely covered by a late
+          +r, larger build should be redundant.                          
+      506 +            var field = new TerrainField(10f);                
+      507 +                                                              
+      508 +            // Small build at center.                         
+      509 +            field.ApplyEdit(new TerrainEdit(Vector2.zero, radi
+          +us: 1f, isAdditive: false));                                  
+      510 +                                                              
+      511 +            // Larger build at center — completely envelops th
+          +e small one.                                                  
+      512 +            field.ApplyEdit(new TerrainEdit(Vector2.zero, radi
+          +us: 5f, isAdditive: false));                                  
+      513 +                                                              
+      514 +            Assert.AreEqual(2, field.Edits.Count);            
+      515 +                                                              
+      516 +            int pruned = field.PruneRedundantEdits();         
+      517 +                                                              
+      518 +            Assert.AreEqual(1, pruned);                       
+      519 +            Assert.AreEqual(1, field.Edits.Count);            
+      520 +            // The larger build should remain.                
+      521 +            Assert.AreEqual(5f, field.Edits[0].Radius);       
+      522 +        }                                                     
+      523 +                                                              
+      524 +        [Test]                                                
+      525 +        public void PruneRedundantEdits_BuildOnSurface_Kept() 
+      526 +        {                                                     
+      527 +            // A build edit that extends the terrain surface s
+          +hould NOT be removed.                                         
+      528 +            var field = new TerrainField(10f);                
+      529 +                                                              
+      530 +            // Build at the surface (10, 0) — adds terrain out
+          +ward.                                                         
+      531 +            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0
+          +f), radius: 2f, isAdditive: false));                          
+      532 +                                                              
+      533 +            int pruned = field.PruneRedundantEdits();         
+      534 +                                                              
+      535 +            Assert.AreEqual(0, pruned);                       
+      536 +            Assert.AreEqual(1, field.Edits.Count);            
+      537 +        }                                                     
+      538 +                                                              
+      539 +        [Test]                                                
+      540 +        public void PruneRedundantEdits_BuildInEmptySpace_Kept
+          +()                                                            
+      541 +        {                                                     
+      542 +            // A standalone build edit in empty space should N
+          +OT be removed.                                                
+      543 +            var field = new TerrainField(10f);                
+      544 +                                                              
+      545 +            // Build far from the planet, in empty space.     
+      546 +            field.ApplyEdit(new TerrainEdit(new Vector2(30f, 0
+          +f), radius: 2f, isAdditive: false));                          
+      547 +                                                              
+      548 +            int pruned = field.PruneRedundantEdits();         
+      549 +                                                              
+      550 +            Assert.AreEqual(0, pruned);                       
+      551 +            Assert.AreEqual(1, field.Edits.Count);            
+      552 +        }                                                     
+      553 +                                                              
+      554 +        [Test]                                                
+      555 +        public void PruneRedundantEdits_MultipleRedundant_Remo
+          +vedInOneSweep()                                               
+      556 +        {                                                     
+      557 +            var field = new TerrainField(10f);                
+      558 +                                                              
+      559 +            // Large cavity.                                  
+      560 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 5f, isAdditive: true));                            
+      561 +                                                              
+      562 +            // Three small digs inside the cavity.            
+      563 +            field.ApplyEdit(new TerrainEdit(new Vector2(4f, 0f
+          +), radius: 0.5f, isAdditive: true));                          
+      564 +            field.ApplyEdit(new TerrainEdit(new Vector2(6f, 0f
+          +), radius: 0.5f, isAdditive: true));                          
+      565 +            field.ApplyEdit(new Vector2(5f, 0f), radius: 0.5f,
+          + isAdditive: true));                                          
+      566 +                                                              
+      567 +            Assert.AreEqual(4, field.Edits.Count);            
+      568 +                                                              
+      569 +            int pruned = field.PruneRedundantEdits();         
+      570 +                                                              
+      571 +            Assert.AreEqual(3, pruned);                       
+      572 +            Assert.AreEqual(1, field.Edits.Count);            
+      573 +        }                                                     
+      574 +                                                              
+      575 +        [Test]                                                
+      576 +        public void PruneRedundantEdits_SamplingUnchangedAfter
+          +Prune()                                                       
+      577 +        {                                                     
+      578 +            var field = new TerrainField(10f);                
+      579 +                                                              
+      580 +            // Carve a cavity.                                
+      581 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 5f, isAdditive: true));                            
+      582 +                                                              
+      583 +            // Redundant small dig inside.                    
+      584 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 1f, isAdditive: true));                            
+      585 +                                                              
+      586 +            // Record samples before pruning.                 
+      587 +            Vector2[] testPositions =                         
+      588 +            {                                                 
+      589 +                new Vector2(0f, 0f),                          
+      590 +                new Vector2(5f, 0f),                          
+      591 +                new Vector2(10f, 0f),                         
+      592 +                new Vector2(-5f, 5f),                         
+      593 +                new Vector2(8f, 3f),                          
+      594 +            };                                                
+      595 +                                                              
+      596 +            float[] before = new float[testPositions.Length]; 
+      597 +            for (int i = 0; i < testPositions.Length; i++)    
+      598 +            {                                                 
+      599 +                before[i] = field.Sample(testPositions[i]);   
+      600 +            }                                                 
+      601 +                                                              
+      602 +            field.PruneRedundantEdits();                      
+      603 +                                                              
+      604 +            for (int i = 0; i < testPositions.Length; i++)    
+      605 +            {                                                 
+      606 +                Assert.AreEqual(before[i], field.Sample(testPo
+          +sitions[i]), 1e-4f,                                           
+      607 +                    $"Sample mismatch at {testPositions[i]}");
+      608 +            }                                                 
+      609 +        }                                                     
+      610 +                                                              
+      611 +        [Test]                                                
+      612 +        public void PruneRedundantEdits_ChunkIndexingPreserved
+          +()                                                            
+      613 +        {                                                     
+      614 +            var field = new TerrainField(10f);                
+      615 +            var grid = new ChunkGrid(10f, chunkSize: 5f);     
+      616 +            field.EnableChunkIndexing(grid);                  
+      617 +                                                              
+      618 +            // Carve a cavity, then add redundant dig.        
+      619 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 4f, isAdditive: true));                            
+      620 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 1f, isAdditive: true));                            
+      621 +                                                              
+      622 +            field.PruneRedundantEdits();                      
+      623 +                                                              
+      624 +            // Chunk-indexed sampling should still match full-
+          +scan sampling.                                                
+      625 +            foreach (TerrainChunk chunk in grid.AllChunks)    
+      626 +            {                                                 
+      627 +                Vector2 sample = new Vector2((chunk.MinX + chu
+          +nk.MaxX) * 0.5f,                                              
+      628 +                    (chunk.MinY + chunk.MaxY) * 0.5f);        
+      629 +                                                              
+      630 +                float expected = field.Sample(sample);        
+      631 +                float actual = field.Sample(sample, chunk.Inde
+          +x);                                                           
+      632 +                Assert.AreEqual(expected, actual, 1e-5f,      
+      633 +                    $"Chunk-indexed mismatch at chunk {chunk.I
+          +ndex} after prune");                                          
+      634 +            }                                                 
+      635 +        }                                                     
+      636 +                                                              
+      637 +        [Test]                                                
+      638 +        public void PruneRedundantEdits_EmptyField_Safe()     
+      639 +        {                                                     
+      640 +            var field = new TerrainField(10f);                
+      641 +                                                              
+      642 +            int pruned = field.PruneRedundantEdits();         
+      643 +                                                              
+      644 +            Assert.AreEqual(0, pruned);                       
+      645 +            Assert.AreEqual(0, field.Edits.Count);            
+      646 +        }                                                     
+      647 +                                                              
+      648 +        [Test]                                                
+      649 +        public void PruneRedundantEdits_CapsuleEdit_RedundantR
+          +emoved()                                                      
+      650 +        {                                                     
+      651 +            var field = new TerrainField(10f);                
+      652 +                                                              
+      653 +            // Large capsule dig.                             
+      654 +            var start = new Vector2(5f, 0f);                  
+      655 +            var end = new Vector2(10f, 0f);                   
+      656 +            field.ApplyEdit(new TerrainEdit(start, end, radius
+          +: 4f, isAdditive: true, BrushShape.Capsule));                 
+      657 +                                                              
+      658 +            // Small capsule dig entirely inside the large one
+          +.                                                             
+      659 +            var smallStart = new Vector2(6f, 0f);             
+      660 +            var smallEnd = new Vector2(8f, 0f);               
+      661 +            field.ApplyEdit(new TerrainEdit(smallStart, smallE
+          +nd, radius: 1f, isAdditive: true, BrushShape.Capsule));       
+      662 +                                                              
+      663 +            Assert.AreEqual(2, field.Edits.Count);            
+      664 +                                                              
+      665 +            int pruned = field.PruneRedundantEdits();         
+      666 +                                                              
+      667 +            Assert.AreEqual(1, pruned);                       
+      668 +            Assert.AreEqual(1, field.Edits.Count);            
+      669 +        }                                                     
+      670 +                                                              
+      671 +        [Test]                                                
+      672 +        public void PruneRedundantEdits_DigThatMovesSurface_Ke
+          +pt()                                                          
+      673 +        {                                                     
+      674 +            // A dig at the surface that shifts the boundary s
+          +hould NOT be removed.                                         
+      675 +            var field = new TerrainField(10f);                
+      676 +                                                              
+      677 +            // Dig centered exactly at the surface.           
+      678 +            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0
+          +f), radius: 2f, isAdditive: true));                           
+      679 +                                                              
+      680 +            int pruned = field.PruneRedundantEdits();         
+      681 +                                                              
+      682 +            Assert.AreEqual(0, pruned);                       
+      683 +            Assert.AreEqual(1, field.Edits.Count);            
+      684 +        }                                                     
+      685 +                                                              
+      686 +        [Test]                                                
+      687 +        public void PruneRedundantEdits_Idempotent()          
+      688 +        {                                                     
+      689 +            // Running prune twice should produce the same res
+          +ult as running it once.                                       
+      690 +            var field = new TerrainField(10f);                
+      691 +                                                              
+      692 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 5f, isAdditive: true));                            
+      693 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 1f, isAdditive: true));                            
+      694 +            field.ApplyEdit(new TerrainEdit(new Vector2(-5f, 0
+          +f), radius: 2f, isAdditive: true));                           
+      695 +                                                              
+      696 +            int firstPrune = field.PruneRedundantEdits();     
+      697 +            int secondPrune = field.PruneRedundantEdits();    
+      698 +                                                              
+      699 +            Assert.AreEqual(0, secondPrune, "Second prune shou
+          +ld find no additional redundant edits.");                     
+      700 +            Assert.Greater(firstPrune, 0, "First prune should 
+          +have found redundant edits.");                                
+      701 +        }                                                     
+      702      }
+      703  }
+
+  Thought for 34s (ctrl+o to expand)
+
+● Let me verify the test file compiles by checking the syntax around the array
+  initializer:
+
+  Thought for 21s, read 1 file (ctrl+o to expand)
+
+● I spotted a typo on line 565 — missing new TerrainEdit(:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Tests\EditMode\TerrainFieldTests.cs)
+  ⎿  Added 1 line, removed 1 line
+      562              // Three small digs inside the cavity.
+      563              field.ApplyEdit(new TerrainEdit(new Vector2(4f, 0f
+           ), radius: 0.5f, isAdditive: true));
+      564              field.ApplyEdit(new TerrainEdit(new Vector2(6f, 0f
+           ), radius: 0.5f, isAdditive: true));
+      565 -            field.ApplyEdit(new Vector2(5f, 0f), radius: 0.5f,
+          - isAdditive: true));                                          
+      565 +            field.ApplyEdit(new TerrainEdit(new Vector2(5f, 0f
+          +), radius: 0.5f, isAdditive: true));                          
+      566  
+      567              Assert.AreEqual(4, field.Edits.Count);
+      568  
+
+  Thought for 10s (ctrl+o to expand)
+
+● Let me verify the end of the test file:
+
+  Thought for 3m 24s, read 1 file (ctrl+o to expand)
+
+● Now let me review the tests for correctness. I need to verify the
+  "BuildBuriedByLaterEdit" test — both builds at the planet center are deep in
+  solid, so both are independently redundant (the base SDF already dominates).
+  Let me fix it to actually test a build that affects the surface, then gets
+  buried:
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Tests\EditMode\TerrainFieldTests.cs)
+  ⎿  Added 6 lines, removed 5 lines
+      502          [Test]
+      503          public void PruneRedundantEdits_BuildBuriedByLaterEdit
+           _Removed()
+      504          {
+      505 -            // A build edit that is entirely covered by a late
+          -r, larger build should be redundant.                          
+      505 +            // A build edit that extends terrain at the surfac
+          +e, then gets covered by a                                     
+      506 +            // later larger build, should be detected as redun
+          +dant.                                                         
+      507              var field = new TerrainField(10f);
+      508  
+      508 -            // Small build at center.                         
+      509 -            field.ApplyEdit(new TerrainEdit(Vector2.zero, radi
+          -us: 1f, isAdditive: false));                                  
+      509 +            // Small build at the surface (10, 0) — this exten
+          +ds terrain outward.                                           
+      510 +            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0
+          +f), radius: 1f, isAdditive: false));                          
+      511  
+      511 -            // Larger build at center — completely envelops th
+          -e small one.                                                  
+      512 -            field.ApplyEdit(new TerrainEdit(Vector2.zero, radi
+          -us: 5f, isAdditive: false));                                  
+      512 +            // Larger build at same position — completely enve
+          +lops the small one.                                           
+      513 +            field.ApplyEdit(new Vector2(10f, 0f), radius: 5f, 
+          +isAdditive: false));                                          
+      514  
+      515              Assert.AreEqual(2, field.Edits.Count);
+      516  
+
+  Thought for 26s (ctrl+o to expand)
+
+● Wait, I introduced a typo in that edit — missing new TerrainEdit(:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Tests\EditMode\TerrainFieldTests.cs)
+  ⎿  Added 1 line, removed 1 line
+      510              field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0
+           f), radius: 1f, isAdditive: false));
+      511  
+      512              // Larger build at same position — completely enve
+           lops the small one.
+      513 -            field.ApplyEdit(new Vector2(10f, 0f), radius: 5f, 
+          -isAdditive: false));                                          
+      513 +            field.ApplyEdit(new TerrainEdit(new Vector2(10f, 0
+          +f), radius: 5f, isAdditive: false));                          
+      514  
+      515              Assert.AreEqual(2, field.Edits.Count);
+      516  
+
+  Thought for 1m 36s (ctrl+o to expand)
+
+● Let me do a final review of the complete test file to make sure everything
+  looks correct:
+
+  Thought for 1m 58s, read 1 file (ctrl+o to expand)
+
+● The tests look correct. Let me verify my reasoning on the Idempotent test by
+  mentally tracing through the SDF values. The large cavity at (5,0) r=5 is
+  non-redundant, the small cavity at (5,0) r=1 is redundant, and the third
+  cavity at (-5,0) r=2 is also non-redundant (it carves terrain at (-5,0),
+  independent from the large cavity). So firstPrune = 1, secondPrune = 0. The
+  assertions hold.
+
+  Thought for 6m 15s (ctrl+o to expand)
+
+● Let me verify no existing callers of GetSolidAreaInCircle are broken by the
+  API change (new optional parameter):
+
+  Thought for 43s, searched for 1 pattern (ctrl+o to expand)
+
+● Existing callers in TerrainExcavationSystem.cs use 3 arguments, which maps to
+  the first 3 parameters. The new excludeEditIndex has a default of -1, so
+  backward compatible.
+
+  Here's a summary of what was implemented:
+
+  Changes
+
+  Runtime/Terrain/TerrainField.cs
+
+  New private method: SampleAt(Vector2, int excludeEditIndex) (line 110)
+  - Computes the SDF at a position, optionally skipping one edit by index. This
+    is the core building block for the area comparison.
+
+  Refactored: Sample(Vector2) (line 206)
+  - Now delegates to SampleAt(localPosition, -1). No behavioral change.
+
+  Extended: GetSolidAreaInCircle (line 403)
+  - Added optional int excludeEditIndex = -1 parameter. Uses SampleAt instead of
+    Sample internally. Backward compatible — existing callers unaffected.
+
+  New private method: GetSolidAreaInRect (line 430)
+  - Rectangular grid sampling for capsule-shaped edit footprints.
+
+  New public method: PruneRedundantEdits(int samplesPerAxis = 16) (line 463)
+  - For each edit, compares solid area within the edit's footprint with and
+    without that edit.
+  - If the area difference is less than 0.1% of the footprint, the edit is
+    redundant and marked for removal.
+  - Compacts the edit list and remaps chunk indices using the same atomic
+    pattern as PruneDeadEdits.
+
+  Tests/EditMode/TerrainFieldTests.cs
+
+  Added 12 tests:
+  - Removal correctness: Small dig in large cavity, build buried by later edit,
+    multiple redundant edits, capsule edit
+  - Safety: Dig in solid kept, build on surface kept, build in empty space kept,
+    dig that moves surface kept
+  - Infrastructure: SDF unchanged after prune, chunk indexing preserved, empty
+    field safe, idempotent
+
+  To run
+
+  Open Unity, go to Window > General > Test Framework, run EditMode tests in
+  SDF_Terrain.Tests. All existing tests should pass, plus the 12 new ones.
+
+✻ Sautéed for 57m 8s · done 12:04 AM
+
+❯ Can you make me a UI element to show fps and edit array length?  Either total 
+  or on each chunk, whatever is easier                                          
+
+  Thought for 6m 3s (ctrl+o to expand)
+
+● Let me check what debug UI already exists so I can follow the same pattern.
+
+  Thought for 1m 34s, searched for 3 patterns, read 2 files (ctrl+o to expand)
+
+● ChunkTerrainRenderer exposes Field, so I can reach the edit count. The easiest
+  addition is a small corner HUD in the existing BrushToolbar.OnGUI(). Let me
+  add it:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\UI\BrushToolbar.cs)
+  ⎿  Added 1 line
+      224              DrawIndicatorGUI();
+      225              DrawTerrainStatsPanel();
+      226              DrawBrushPreviewOverlay();
+      227 +            DrawDebugHUD();                                   
+      228          }
+      229  
+      230          /// <summary>Draws a colored circle at the mouse posit
+           ion showing the brush footprint.</summary>
+
+  Thought for 26s (ctrl+o to expand)
+
+● Now add the DrawDebugHUD method before OnValidate:
+
+● Update(~\SDFPlanet\Assets\SDF_Terrain\Runtime\UI\BrushToolbar.cs)
+  ⎿  Added 17 lines
+      482              }
+      483          }
+      484  
+      485 +        /// <summary>Draws a small debug HUD showing FPS and e
+          +dit count in the bottom-left corner.</summary>                
+      486 +        private void DrawDebugHUD()                           
+      487 +        {                                                     
+      488 +            float fps = Mathf.Round(1f / Time.unscaledDeltaTim
+          +e);                                                           
+      489 +            int editCount = chunkTerrainRenderer != null ? chu
+          +nkTerrainRenderer.Field.Edits.Count : 0;                      
+      490 +                                                              
+      491 +            GUIStyle style = new GUIStyle(GUI.skin.label)     
+      492 +            {                                                 
+      493 +                normal = { textColor = new Color(0.7f, 0.7f, 0
+          +.7f) },                                                       
+      494 +                fontSize = 11,                                
+      495 +                alignment = TextAnchor.LowerLeft              
+      496 +            };                                                
+      497 +                                                              
+      498 +            GUI.Label(new Rect(8f, Screen.height - 20f, 200f, 
+          +20f),                                                         
+      499 +                $"FPS: {fps}  Edits: {editCount}", style);    
+      500 +        }                                                     
+      501 +                                                              
+      502          private void OnValidate()
+      503          {
+      504              brushRadius = Mathf.Clamp(brushRadius, MinRadius, 
+           MaxRadius);
+
+  Thought for 5m 47s (ctrl+o to expand)
+
+● Done. Added a small debug HUD to BrushToolbar.OnGUI() that shows FPS and Edits
+  count in the bottom-left corner of the Game View.
+
+  It reads the edit count from chunkTerrainRenderer.Field.Edits.Count and
+  computes FPS from Time.unscaledDeltaTime. Styled in subtle gray text, out of
+  the way of the toolbar. You should see it as soon as you play the scene that
+  has a BrushToolbar component.
+
+✻ Sautéed for 14m 30s · done 8:06 AM
+
+❯ When do we call the edit culling code, because I dont see it happening        
+
+  Thought for 5m 22s (ctrl+o to expand)
+
+● You're right — it's not happening because nothing calls it yet. The plan
+  explicitly deferred the trigger mechanism. The method exists on TerrainField
+  but is a dead function right now.
+
+  The question is when to run it. A few options:
+
+  1. After each brush stroke — simple, but adds overhead every frame while the
+     mouse is held down.
+  2. When edit count crosses a threshold — e.g., run every 50 edits. Avoids
+     frequent sweeps.
+  3. On idle — run in LateUpdate only when the user hasn't interacted for N
+     frames. Doesn't block editing.
+  4. Manual trigger — a keyboard shortcut or UI button. Good for debugging, not
+     useful in gameplay.
+
+  My recommendation is #2 with a #3 fallback: trigger a sweep when the edit list
+  grows past a threshold (e.g., 100 edits), and also run it periodically during
+  idle so it doesn't fall behind.
+
+  Where should I wire it in? The natural place is BrushToolbar or
+  ChunkTerrainRenderer — both are already in the brush stroke path and have
+  access to the TerrainField.
+
+✻ Cogitated for 6m 22s · done 8:14 AM
+
+❯ Go ahead and run it every 100 edits, but give me a parameter to modify that   
+  number                                                                        
+
+  Thought for 5m 18s (ctrl+o to expand)
+
+● I'll add this to BrushToolbar — it already tracks the renderer and is in the
+  brush stroke path.
+
+  Read 1 file (ctrl+o to expand)
+
+● API Error: 400 All target providers failed.
+
+✻ Cooked for 5m 19s · done 8:28 AM
