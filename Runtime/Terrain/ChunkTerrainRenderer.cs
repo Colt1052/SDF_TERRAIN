@@ -527,6 +527,33 @@ namespace SDFTerrain.Terrain
         }
 
         /// <summary>
+        /// Removes edits from the field that only affect chunks with no active view
+        /// (chunks that were removed after being rebuilt as empty, or chunks that never
+        /// produced geometry). An edit is "isolated" when none of its affected chunk keys
+        /// correspond to a loaded <see cref="ChunkView"/>.
+        /// </summary>
+        /// <returns>The number of isolated edits removed.</returns>
+        public int PruneIsolatedEdits()
+        {
+            if (_field == null)
+            {
+                throw new InvalidOperationException("PruneIsolatedEdits requires Initialize to have been called first.");
+            }
+
+            return _field.PruneIsolatedEdits(key =>
+            {
+                int col = (int)(key >> 32);
+                int row = (int)(key & 0xffffffffL);
+
+                if (!_chunkGrid.HasChunkAtGrid(col, row))
+                    return false;
+
+                TerrainChunk chunk = _chunkGrid.GetChunkAtGrid(col, row);
+                return _chunkViews.ContainsKey(chunk.Index);
+            });
+        }
+
+        /// <summary>
         /// Returns the total solid area across all active chunk meshes.
         /// Useful for UI overlays that display world-state statistics.
         /// </summary>

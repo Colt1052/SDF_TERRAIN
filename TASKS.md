@@ -83,6 +83,7 @@ Per-chunk sampling, dirty-only rebuilds, `ChunkTerrainRenderer`.
 - **15.12** Prevent chunk creation for delete brushes in empty space
 - **15.13** Automatic removal of empty chunks
 - **15.14** In-game brush selection & property editor (ScriptableObject brush system)
+- **15.15** Edit-centric chunk index + isolation pruning
 
 ## 16. Undo system
 

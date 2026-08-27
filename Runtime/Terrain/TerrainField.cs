@@ -26,6 +26,11 @@ namespace SDFTerrain.Terrain
         // chunk object exists (e.g., delete brushes outside the current grid).
         private Dictionary<long, List<int>> _editsByChunkKey;
 
+        // Reverse index: edit index -> packed (col, row) keys of chunks the edit's bounding box
+        // overlaps.  Used by batch operations (isolation pruning, baking, region-scoped
+        // redundant-edit searches) rather than per-sample hot paths.
+        private Dictionary<int, HashSet<long>> _editChunkKeys;
+
         /// <summary>Packs (col, row) into a unique long key, matching ChunkGrid.MakeKey.</summary>
         static long PackKey(int col, int row)
         {
@@ -83,6 +88,7 @@ namespace SDFTerrain.Terrain
 
             _chunkGrid = chunkGrid;
             _editsByChunkKey = new Dictionary<long, List<int>>();
+            _editChunkKeys = new Dictionary<int, HashSet<long>>();
 
             // Initialize entries for all existing chunks, keyed by packed (col, row).
             foreach (TerrainChunk chunk in chunkGrid.AllChunks)
@@ -309,6 +315,9 @@ namespace SDFTerrain.Terrain
             int rowStart = Mathf.FloorToInt((brushMinY - gridMinY) / chunkSize);
             int rowEnd = Mathf.CeilToInt((brushMaxY - gridMinY) / chunkSize) - 1;
 
+            // Build the reverse index for this edit.
+            HashSet<long> chunkKeys = null;
+
             for (int row = rowStart; row <= rowEnd; row++)
             {
                 for (int col = colStart; col <= colEnd; col++)
@@ -320,8 +329,15 @@ namespace SDFTerrain.Terrain
                         _editsByChunkKey[key] = list;
                     }
                     list.Add(editIndex);
+
+                    if (chunkKeys == null)
+                        chunkKeys = new HashSet<long>();
+                    chunkKeys.Add(key);
                 }
             }
+
+            if (chunkKeys != null)
+                _editChunkKeys[editIndex] = chunkKeys;
         }
 
         /// <summary>
@@ -384,6 +400,21 @@ namespace SDFTerrain.Terrain
                         chunkList.RemoveAt(chunkList.Count - 1);
                     }
                 }
+            }
+
+            // Rebuild reverse index from surviving edits.
+            if (_editChunkKeys != null && pruned > 0)
+            {
+                var rebuilt = new Dictionary<int, HashSet<long>>();
+                for (int i = 0; i < count; i++)
+                {
+                    int newIndex = oldToNew[i];
+                    if (newIndex >= 0 && _editChunkKeys.TryGetValue(i, out var keys))
+                    {
+                        rebuilt[newIndex] = keys;
+                    }
+                }
+                _editChunkKeys = rebuilt;
             }
 
             return pruned;
@@ -561,7 +592,144 @@ namespace SDFTerrain.Terrain
                 }
             }
 
+            // Rebuild reverse index from surviving edits.
+            if (_editChunkKeys != null)
+            {
+                var rebuilt = new Dictionary<int, HashSet<long>>();
+                for (int i = 0; i < count; i++)
+                {
+                    int newIndex = oldToNew[i];
+                    if (newIndex >= 0 && _editChunkKeys.TryGetValue(i, out var keys))
+                    {
+                        rebuilt[newIndex] = keys;
+                    }
+                }
+                _editChunkKeys = rebuilt;
+            }
+
             return redundantCount;
+        }
+
+        /// <summary>
+        /// Removes edits that are "isolated" — edits whose affected chunks are all
+        /// considered inactive by the caller's predicate.
+        ///
+        /// An edit is isolated when <paramref name="isChunkActive"/> returns <c>false</c>
+        /// for every chunk key in the edit's footprint.  The caller decides what
+        /// "active" means (e.g., chunk is loaded in memory, chunk has geometry,
+        /// chunk is within render distance).
+        /// </summary>
+        /// <param name="isChunkActive">A predicate that receives a packed (col, row) chunk key
+        /// and returns <c>true</c> if that chunk should be considered active.  An edit is
+        /// removed only if ALL its chunk keys return <c>false</c>.</param>
+        /// <returns>The number of isolated edits removed.</returns>
+        public int PruneIsolatedEdits(Func<long, bool> isChunkActive)
+        {
+            if (_editChunkKeys == null)
+            {
+                throw new InvalidOperationException("PruneIsolatedEdits requires EnableChunkIndexing to have been called first.");
+            }
+
+            int count = _edits.Count;
+            bool[] isIsolated = new bool[count];
+            int isolatedCount = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (!_editChunkKeys.TryGetValue(i, out var keys) || keys.Count == 0)
+                {
+                    // Edit has no chunk keys (shouldn't normally happen, but treat as
+                    // isolated — if we can't prove it affects an active chunk, it's not doing work).
+                    isIsolated[i] = true;
+                    isolatedCount++;
+                    continue;
+                }
+
+                bool anyActive = false;
+                foreach (var key in keys)
+                {
+                    if (isChunkActive(key))
+                    {
+                        anyActive = true;
+                        break;
+                    }
+                }
+
+                if (!anyActive)
+                {
+                    isIsolated[i] = true;
+                    isolatedCount++;
+                }
+            }
+
+            if (isolatedCount == 0)
+                return 0;
+
+            // Compact _edits and build index remap table.
+            int writeIndex = 0;
+            int[] oldToNew = new int[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                if (isIsolated[i])
+                {
+                    oldToNew[i] = -1;
+                }
+                else
+                {
+                    oldToNew[i] = writeIndex;
+                    if (writeIndex != i)
+                    {
+                        _edits[writeIndex] = _edits[i];
+                    }
+                    writeIndex++;
+                }
+            }
+
+            while (_edits.Count > writeIndex)
+            {
+                _edits.RemoveAt(_edits.Count - 1);
+            }
+
+            // Remap chunk indices.
+            if (_editsByChunkKey != null)
+            {
+                foreach (List<int> chunkList in _editsByChunkKey.Values)
+                {
+                    int w = 0;
+                    for (int r = 0; r < chunkList.Count; r++)
+                    {
+                        int oldIndex = chunkList[r];
+                        int newIndex = oldToNew[oldIndex];
+                        if (newIndex >= 0)
+                        {
+                            chunkList[w] = newIndex;
+                            w++;
+                        }
+                    }
+                    while (chunkList.Count > w)
+                    {
+                        chunkList.RemoveAt(chunkList.Count - 1);
+                    }
+                }
+            }
+
+            // Rebuild reverse index from surviving edits.
+            if (_editChunkKeys != null)
+            {
+                var rebuilt = new Dictionary<int, HashSet<long>>();
+                for (int i = 0; i < count; i++)
+                {
+                    int newIndex = oldToNew[i];
+                    if (newIndex >= 0 && _editChunkKeys.TryGetValue(i, out var keys))
+                    {
+                        rebuilt[newIndex] = keys;
+                    }
+                }
+                _editChunkKeys = rebuilt;
+            }
+
+            return isolatedCount;
         }
 
         /// <summary>Removes all persisted edits, leaving only the base sphere.</summary>
@@ -576,6 +744,8 @@ namespace SDFTerrain.Terrain
                     list.Clear();
                 }
             }
+
+            _editChunkKeys?.Clear();
         }
 
         /// <summary>Replaces all persisted edits, e.g. when loading a save file.</summary>
@@ -596,6 +766,8 @@ namespace SDFTerrain.Terrain
                 {
                     list.Clear();
                 }
+
+                _editChunkKeys.Clear();
 
                 for (int i = 0; i < _edits.Count; i++)
                 {
