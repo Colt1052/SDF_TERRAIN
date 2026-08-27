@@ -969,5 +969,217 @@ namespace SDFTerrain.Tests
             Assert.Throws<InvalidOperationException>(
                 () => field.PruneIsolatedEdits(key => true));
         }
+
+        // ---- RemoveRedundantBrushEdits ----
+        // Note: ConsolidateUniformRegions() and TryBakeCoveredChunks() (triggered by ApplyEdit)
+        // already call RemoveRedundantBrushEdits internally. These tests verify both the
+        // automatic removal during baking and the manual API for edge cases.
+
+        [Test]
+        public void BrushEditRemoved_WhenAllChunksBaked()
+        {
+            // A large circle edit that makes every affected chunk uniformly air should be
+            // automatically removed during consolidation (replaced by Rectangle edits).
+            var field = new TerrainField(1f); // tiny planet, all sample points are air
+            var grid = new ChunkGrid(1f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Large circle covers all chunks, making them uniformly air.
+            field.ApplyEdit(new TerrainEdit(Vector2.zero, radius: 10f, isAdditive: true, clamped: true));
+
+            Assert.AreEqual(1, field.Edits.Count);
+            Assert.AreEqual(BrushShape.Circle, field.Edits[0].Shape);
+
+            field.ConsolidateUniformRegions(1f);
+
+            // Circle should have been removed during consolidation; replaced by Rectangle(s).
+            bool anyCircle = false;
+            foreach (TerrainEdit edit in field.Edits)
+            {
+                if (edit.Shape == BrushShape.Circle)
+                    anyCircle = true;
+            }
+            Assert.IsFalse(anyCircle, "Circle edit should no longer exist after consolidation");
+
+            // Calling again should be idempotent.
+            int removed = field.RemoveRedundantBrushEdits();
+            Assert.AreEqual(0, removed, "RemoveRedundantBrushEdits should be idempotent after consolidation");
+        }
+
+        [Test]
+        public void BrushEditKept_WhenSomeChunksNotBaked()
+        {
+            // A circle edit that affects a mixed chunk (no Rectangle created for it) should
+            // NOT be removed, because it still contributes to that chunk's sampling.
+            var field = new TerrainField(5f);
+            var grid = new ChunkGrid(5f, chunkSize: 5f); // 2x2 grid: [-5,-5] to [5,5]
+            field.EnableChunkIndexing(grid);
+
+            // Circle near a chunk boundary so the top-right chunk is mixed.
+            // Chunk (1,1) covers [0,0] to [5,5]. Cell size 2: samples at (1,1), (3,1), (1,3), (3,3).
+            // Circle at (1.5,1.5) radius 3: (1,1) inside, others outside -> mixed.
+            field.ApplyEdit(new TerrainEdit(new Vector2(1.5f, 1.5f), radius: 3f, isAdditive: true, clamped: true));
+
+            Assert.AreEqual(1, field.Edits.Count);
+
+            field.ConsolidateUniformRegions(2f);
+
+            // The circle edit should be kept because chunk (1,1) is mixed.
+            int circleCount = 0;
+            foreach (TerrainEdit edit in field.Edits)
+            {
+                if (edit.Shape == BrushShape.Circle)
+                    circleCount++;
+            }
+            Assert.AreEqual(1, circleCount, "Circle edit should be kept when a chunk is mixed (not baked)");
+        }
+
+        [Test]
+        public void BrushEditRemoved_ChunkKeyWithNoChunk()
+        {
+            // A brush edit that only affects chunk keys where no real chunk exists should be
+            // removed, since it has no effect on any real chunk. This is handled by
+            // TryBakeCoveredChunks (called during ApplyEdit) — but we verify the manual call
+            // works for edits that bypass automatic removal.
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(5f, chunkSize: 5f); // 2x2 grid at [0,0] to [10,10]
+            field.EnableChunkIndexing(grid);
+
+            // Place an edit far outside the grid — affects chunk keys with no real chunks.
+            field.ApplyEdit(new TerrainEdit(new Vector2(50f, 50f), radius: 5f, isAdditive: true, clamped: true));
+
+            // The edit was indexed. Manual removal detects it has no real chunks to affect.
+            int removed = field.RemoveRedundantBrushEdits();
+
+            Assert.AreEqual(1, removed, "Edit affecting no real chunks should be removed");
+            Assert.AreEqual(0, field.Edits.Count);
+        }
+
+        [Test]
+        public void BrushEditKept_RectangleNotCovering()
+        {
+            // If a Rectangle exists but does not cover a chunk that the brush edit affects,
+            // the brush edit must be kept.
+            var field = new TerrainField(5f);
+            var grid = new ChunkGrid(5f, chunkSize: 5f); // 2x2 grid: [-5,-5] to [5,5]
+            field.EnableChunkIndexing(grid);
+
+            // Circle edit affecting chunk (1,1) — it's mixed, so no Rectangle is created there.
+            field.ApplyEdit(new TerrainEdit(new Vector2(1.5f, 1.5f), radius: 3f, isAdditive: true, clamped: true));
+
+            // Also create a rectangle in a completely different chunk — it won't cover
+            // the circle's affected chunk.
+            float diag = Mathf.Sqrt(25f + 25f);
+            field.ApplyEdit(new TerrainEdit(
+                new Vector2(-5f, -5f), new Vector2(0f, 0f), diag * 2f,
+                isAdditive: false, BrushShape.Rectangle, clamped: true));
+
+            Assert.AreEqual(2, field.Edits.Count);
+
+            field.ConsolidateUniformRegions(2f);
+
+            // Circle should still exist: its chunk (1,1) is mixed, no rectangle covers it.
+            int circleCount = 0;
+            foreach (TerrainEdit edit in field.Edits)
+            {
+                if (edit.Shape == BrushShape.Circle)
+                    circleCount++;
+            }
+            Assert.AreEqual(1, circleCount, "Circle should be kept when no rectangle covers its chunk");
+        }
+
+        [Test]
+        public void RemoveRedundantBrushEdits_SafeOnEmpty()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            int removed = field.RemoveRedundantBrushEdits();
+
+            Assert.AreEqual(0, removed);
+            Assert.AreEqual(0, field.Edits.Count);
+        }
+
+        [Test]
+        public void RemoveRedundantBrushEdits_SafeWithOnlyRectangles()
+        {
+            var field = new TerrainField(10f);
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Add only rectangle edits.
+            float diag = Mathf.Sqrt(50f + 50f);
+            field.ApplyEdit(new TerrainEdit(
+                new Vector2(0f, 0f), new Vector2(10f, 10f), diag * 2f,
+                isAdditive: false, BrushShape.Rectangle, clamped: true));
+
+            Assert.AreEqual(1, field.Edits.Count);
+
+            int removed = field.RemoveRedundantBrushEdits();
+
+            Assert.AreEqual(0, removed, "Rectangle edits should be skipped, nothing removed");
+            Assert.AreEqual(1, field.Edits.Count);
+        }
+
+        [Test]
+        public void MultipleBrushEdits_RemovedAfterConsolidation()
+        {
+            // Two separate circle edits in different regions, each making their chunks
+            // uniformly air. Both should be removed during consolidation.
+            var field = new TerrainField(1f); // tiny planet
+            var grid = new ChunkGrid(10f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Two circles at opposite sides of the grid.
+            field.ApplyEdit(new TerrainEdit(new Vector2(7.5f, 7.5f), radius: 5f, isAdditive: true, clamped: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(-7.5f, -7.5f), radius: 5f, isAdditive: true, clamped: true));
+
+            Assert.AreEqual(2, field.Edits.Count);
+
+            field.ConsolidateUniformRegions(1f);
+
+            // Both circles should have been removed during consolidation.
+            int circleCountAfter = 0;
+            foreach (TerrainEdit edit in field.Edits)
+            {
+                if (edit.Shape == BrushShape.Circle) circleCountAfter++;
+            }
+            Assert.AreEqual(0, circleCountAfter, "No circle edits should remain after consolidation");
+
+            // Second call is idempotent.
+            int removed = field.RemoveRedundantBrushEdits();
+            Assert.AreEqual(0, removed, "RemoveRedundantBrushEdits should return 0 on second call");
+        }
+
+        [Test]
+        public void IndexRemapping_CorrectAfterRemoval()
+        {
+            // After removing brush edits, chunk-indexed sampling must still match full-scan
+            // sampling, proving the indices were correctly remapped.
+            var field = new TerrainField(1f); // tiny planet
+            var grid = new ChunkGrid(5f, chunkSize: 5f);
+            field.EnableChunkIndexing(grid);
+
+            // Three circle edits at different locations.
+            field.ApplyEdit(new TerrainEdit(new Vector2(7.5f, 7.5f), radius: 5f, isAdditive: true, clamped: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(-7.5f, -7.5f), radius: 5f, isAdditive: true, clamped: true));
+            field.ApplyEdit(new TerrainEdit(new Vector2(0f, 0f), radius: 2f, isAdditive: false, clamped: true));
+
+            field.ConsolidateUniformRegions(1f);
+
+            // Verify chunk-indexed sampling matches full scan after consolidation + removal.
+            foreach (TerrainChunk chunk in grid.AllChunks)
+            {
+                Vector2 sample = new Vector2((chunk.MinX + chunk.MaxX) * 0.5f,
+                    (chunk.MinY + chunk.MaxY) * 0.5f);
+
+                float expected = field.Sample(sample);
+                float actual = field.Sample(sample, chunk.Index);
+
+                Assert.AreEqual(expected, actual, 1e-5f,
+                    $"Chunk-indexed mismatch at chunk {chunk.Index} after brush edit removal");
+            }
+        }
     }
 }

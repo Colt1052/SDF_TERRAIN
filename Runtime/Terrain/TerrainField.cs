@@ -385,6 +385,8 @@ namespace SDFTerrain.Terrain
                 BakeChunk(chunk, editIndices, bakeEdit);
             }
 
+            // After baking, remove any brush edits that are now fully replaced by grid edits.
+            RemoveRedundantBrushEdits();
         }
 
         /// <summary>
@@ -1118,6 +1120,9 @@ namespace SDFTerrain.Terrain
                 // Remove old edits and add the baked edit. BakeChunk handles index remapping.
                 BakeChunk(chunk, editIndices, bakeEdit);
             }
+
+            // After baking, remove any brush edits that are now fully replaced by grid edits.
+            RemoveRedundantBrushEdits();
         }
 
         /// <summary>
@@ -1208,6 +1213,151 @@ namespace SDFTerrain.Terrain
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Removes brush edits (Circle/Capsule) that are no longer needed because every chunk
+        /// they affect now has a grid edit (Rectangle) that fully covers it.
+        ///
+        /// A brush edit is redundant when, for every chunk key in its reverse index:
+        /// - If a real chunk exists at that key, the chunk's edit list contains a Rectangle
+        ///   that covers the entire chunk.
+        /// - If no chunk exists, the key is skipped (the brush has no effect there).
+        ///
+        /// Call this after baking to reclaim stale brush edits from the global list.
+        /// </summary>
+        /// <returns>The number of redundant brush edits removed.</returns>
+        public int RemoveRedundantBrushEdits()
+        {
+            if (_editChunkKeys == null)
+            {
+                throw new InvalidOperationException("RemoveRedundantBrushEdits requires EnableChunkIndexing to have been called first.");
+            }
+
+            int count = _edits.Count;
+            bool[] isRedundant = new bool[count];
+            int redundantCount = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                TerrainEdit edit = _edits[i];
+
+                // Only consider brush edits (Circle/Capsule). Rectangles are the replacement.
+                if (edit.Shape == BrushShape.Rectangle)
+                    continue;
+
+                // Get the chunk keys this edit affects.
+                if (!_editChunkKeys.TryGetValue(i, out var keys) || keys.Count == 0)
+                {
+                    // No chunk keys — edit is isolated and contributes nothing.
+                    isRedundant[i] = true;
+                    redundantCount++;
+                    continue;
+                }
+
+                bool allCovered = true;
+
+                foreach (var key in keys)
+                {
+                    int col = (int)(key >> 32);
+                    int row = (int)(key & 0xffffffffL);
+
+                    // If no real chunk exists at this key, the brush has no effect here.
+                    if (!_chunkGrid.HasChunkAtGrid(col, row))
+                        continue;
+
+                    // Chunk exists — does its edit list have a covering Rectangle?
+                    TerrainChunk chunk = _chunkGrid.GetChunkAtGrid(col, row);
+
+                    if (!_editsByChunkKey.TryGetValue(key, out var editList) || editList.Count == 0)
+                    {
+                        // Chunk has no registered edits — not covered by a Rectangle.
+                        allCovered = false;
+                        break;
+                    }
+
+                    if (!RectangleCoversChunk(chunk, editList))
+                    {
+                        allCovered = false;
+                        break;
+                    }
+                }
+
+                if (allCovered)
+                {
+                    isRedundant[i] = true;
+                    redundantCount++;
+                }
+            }
+
+            if (redundantCount == 0)
+                return 0;
+
+            // Compact _edits and build index remap table.
+            int writeIndex = 0;
+            int[] oldToNew = new int[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                if (isRedundant[i])
+                {
+                    oldToNew[i] = -1;
+                }
+                else
+                {
+                    oldToNew[i] = writeIndex;
+                    if (writeIndex != i)
+                    {
+                        _edits[writeIndex] = _edits[i];
+                    }
+                    writeIndex++;
+                }
+            }
+
+            while (_edits.Count > writeIndex)
+            {
+                _edits.RemoveAt(_edits.Count - 1);
+            }
+
+            // Remap chunk indices and remove references to pruned edits.
+            if (_editsByChunkKey != null)
+            {
+                foreach (List<int> chunkList in _editsByChunkKey.Values)
+                {
+                    int w = 0;
+                    for (int r = 0; r < chunkList.Count; r++)
+                    {
+                        int oldIndex = chunkList[r];
+                        int newIndex = oldToNew[oldIndex];
+                        if (newIndex >= 0)
+                        {
+                            chunkList[w] = newIndex;
+                            w++;
+                        }
+                    }
+                    while (chunkList.Count > w)
+                    {
+                        chunkList.RemoveAt(chunkList.Count - 1);
+                    }
+                }
+            }
+
+            // Rebuild reverse index from surviving edits.
+            if (_editChunkKeys != null)
+            {
+                var rebuilt = new Dictionary<int, HashSet<long>>();
+                for (int i = 0; i < count; i++)
+                {
+                    int newIndex = oldToNew[i];
+                    if (newIndex >= 0 && _editChunkKeys.TryGetValue(i, out var editKeys))
+                    {
+                        rebuilt[newIndex] = editKeys;
+                    }
+                }
+                _editChunkKeys = rebuilt;
+            }
+
+            return redundantCount;
         }
 
         /// <summary>
