@@ -440,40 +440,25 @@ namespace SDFTerrain.Terrain
             int count = _edits.Count;
             List<int> toRemove = null;
 
-            for (int i = 0; i < count; i++)
+            // When chunk indexing is available, scope containment checks to only edits
+            // registered against chunks that overlap the new edit's bounding box.
+            // If the existing edit is contained, its bbox lies within the new edit's bbox,
+            // so every chunk the existing edit's bbox overlaps is also overlapped by the
+            // new edit's bbox — we will find it in those chunk lists.
+            if (_editsByChunkKey != null)
             {
-                TerrainEdit existing = _edits[i];
-
-                // Same shape: required so bbox containment implies shape dominance.
-                if (existing.Shape != newEdit.Shape)
-                    continue;
-
-                // Same sign: opposite-sign edits interact non-trivially (Max vs Min CSG).
-                if (existing.IsAdditive != newEdit.IsAdditive)
-                    continue;
-
-                // Same clamped flag: different boundary behavior would change terrain values
-                // at the contained edit's edge.
-                if (existing.Clamped != newEdit.Clamped)
-                    continue;
-
-                // Larger radius cannot be subsumed by a smaller one.
-                if (existing.Radius > newEdit.Radius)
-                    continue;
-
-                // Bounding-box containment check (shape-agnostic via GetBoundingBox).
-                existing.GetBoundingBox(out float eMinX, out float eMaxX, out float eMinY, out float eMaxY);
-
-                if (eMinX >= nMinX && eMaxX <= nMaxX && eMinY >= nMinY && eMaxY <= nMaxY)
-                {
-                    if (toRemove == null)
-                        toRemove = new List<int>();
-                    toRemove.Add(i);
-                }
+                RemoveContainedEditsSpatial(newEdit, nMinX, nMaxX, nMinY, nMaxY, count, ref toRemove);
+            }
+            else
+            {
+                RemoveContainedEditsFullScan(newEdit, nMinX, nMaxX, nMinY, nMaxY, count, ref toRemove);
             }
 
             if (toRemove == null || toRemove.Count == 0)
                 return 0;
+
+            // Compaction logic requires toRemove to be sorted (CountLessThan uses binary search).
+            toRemove.Sort();
 
             // Build old-to-new index mapping.
             int[] oldToNew = new int[count];
@@ -548,6 +533,105 @@ namespace SDFTerrain.Terrain
             return lo;
         }
 
+        private void RemoveContainedEditsSpatial(TerrainEdit newEdit, float nMinX, float nMaxX, float nMinY, float nMaxY, int count, ref List<int> toRemove)
+        {
+            // Compute the chunk-range overlapped by the new edit's bounding box.
+            float chunkSize = _chunkGrid.ChunkSize;
+            float gridMinX = -(_chunkGrid.Cols * chunkSize) / 2f;
+            float gridMinY = -(_chunkGrid.Rows * chunkSize) / 2f;
+
+            int colStart = Mathf.FloorToInt((nMinX - gridMinX) / chunkSize);
+            int colEnd = Mathf.CeilToInt((nMaxX - gridMinX) / chunkSize) - 1;
+            int rowStart = Mathf.FloorToInt((nMinY - gridMinY) / chunkSize);
+            int rowEnd = Mathf.CeilToInt((nMaxY - gridMinY) / chunkSize) - 1;
+
+            // Collect candidate edit indices from the overlapping chunk lists.
+            HashSet<int> candidates = null;
+
+            for (int row = rowStart; row <= rowEnd; row++)
+            {
+                for (int col = colStart; col <= colEnd; col++)
+                {
+                    long key = PackKey(col, row);
+                    if (_editsByChunkKey.TryGetValue(key, out List<int> indices))
+                    {
+                        for (int k = 0; k < indices.Count; k++)
+                        {
+                            int idx = indices[k];
+                            if (idx >= count)
+                                continue; // Stale index — skip (shouldn't happen, but be safe)
+
+                            if (candidates == null)
+                                candidates = new HashSet<int>();
+                            candidates.Add(idx);
+                        }
+                    }
+                }
+            }
+
+            if (candidates == null)
+                return; // No overlapping chunks — nothing to check
+
+            // Check containment only against the candidate edits.
+            foreach (int i in candidates)
+            {
+                TerrainEdit existing = _edits[i];
+
+                if (existing.Shape != newEdit.Shape)
+                    continue;
+                if (existing.IsAdditive != newEdit.IsAdditive)
+                    continue;
+                if (existing.Clamped != newEdit.Clamped)
+                    continue;
+                if (existing.Radius > newEdit.Radius)
+                    continue;
+
+                existing.GetBoundingBox(out float eMinX, out float eMaxX, out float eMinY, out float eMaxY);
+
+                if (eMinX >= nMinX && eMaxX <= nMaxX && eMinY >= nMinY && eMaxY <= nMaxY)
+                {
+                    if (toRemove == null)
+                        toRemove = new List<int>();
+                    toRemove.Add(i);
+                }
+            }
+        }
+
+        private void RemoveContainedEditsFullScan(TerrainEdit newEdit, float nMinX, float nMaxX, float nMinY, float nMaxY, int count, ref List<int> toRemove)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                TerrainEdit existing = _edits[i];
+
+                // Same shape: required so bbox containment implies shape dominance.
+                if (existing.Shape != newEdit.Shape)
+                    continue;
+
+                // Same sign: opposite-sign edits interact non-trivially (Max vs Min CSG).
+                if (existing.IsAdditive != newEdit.IsAdditive)
+                    continue;
+
+                // Same clamped flag: different boundary behavior would change terrain values
+                // at the contained edit's edge.
+                if (existing.Clamped != newEdit.Clamped)
+                    continue;
+
+                // Larger radius cannot be subsumed by a smaller one.
+                if (existing.Radius > newEdit.Radius)
+                    continue;
+
+                // Bounding-box containment check (shape-agnostic via GetBoundingBox).
+                existing.GetBoundingBox(out float eMinX, out float eMaxX, out float eMinY, out float eMaxY);
+
+                if (eMinX >= nMinX && eMaxX <= nMaxX && eMinY >= nMinY && eMaxY <= nMaxY)
+                {
+                    if (toRemove == null)
+                        toRemove = new List<int>();
+                    toRemove.Add(i);
+                }
+            }
+        }
+
         private void IndexEdit(int editIndex, TerrainEdit edit)
         {
             // Rectangular overlap test: find all chunks whose bounding box overlaps the
@@ -557,16 +641,10 @@ namespace SDFTerrain.Terrain
             edit.GetBoundingBox(out float brushMinX, out float brushMaxX,
                 out float brushMinY, out float brushMaxY);
 
-            // Expand by Radius so the edit is indexed against all chunks its SDF cone
-            // can reach. Rectangle shapes don't include Radius in their bbox (the
-            // bbox is the shape extent), so expand here for indexing purposes.
-            if (edit.Shape == BrushShape.Rectangle)
-            {
-                brushMinX -= edit.Radius;
-                brushMaxX += edit.Radius;
-                brushMinY -= edit.Radius;
-                brushMaxY += edit.Radius;
-            }
+            // NOTE: Rectangle shapes no longer expand by Radius during indexing.
+            // The bounding box from GetBoundingBox already represents the actual shape
+            // extent, so expanding would register the edit against chunks it doesn't
+            // actually affect, inflating per-chunk edit lists and sampling cost.
 
             float chunkSize = _chunkGrid.ChunkSize;
             float gridMinX = -(_chunkGrid.Cols * chunkSize) / 2f;

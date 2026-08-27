@@ -14,6 +14,7 @@ namespace SDFTerrain.Terrain
     public class ChunkGrid
     {
         private readonly Dictionary<long, TerrainChunk> _chunks = new Dictionary<long, TerrainChunk>();
+        private readonly Dictionary<int, TerrainChunk> _chunkByIndex = new Dictionary<int, TerrainChunk>();
         private readonly float _chunkSize;
         private readonly float _gridMinX;
         private readonly float _gridMinY;
@@ -71,7 +72,9 @@ namespace SDFTerrain.Terrain
                     float maxX = minX + chunkSize;
                     float minY = _gridMinY + row * chunkSize;
                     float maxY = minY + chunkSize;
-                    _chunks[MakeKey(col, row)] = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
+                    var chunk = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
+                    _chunks[MakeKey(col, row)] = chunk;
+                    _chunkByIndex[chunk.Index] = chunk;
                 }
             }
         }
@@ -109,21 +112,18 @@ namespace SDFTerrain.Terrain
                     float maxX = minX + chunkSize;
                     float minY = _gridMinY + row * chunkSize;
                     float maxY = minY + chunkSize;
-                    _chunks[MakeKey(col, row)] = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
+                    var chunk = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
+                    _chunks[MakeKey(col, row)] = chunk;
+                    _chunkByIndex[chunk.Index] = chunk;
                 }
             }
         }
 
         public TerrainChunk GetChunk(int index)
         {
-            // Linear search by index — used primarily by debug views and tests.
-            // ChunkTerrainRenderer uses _chunkViews dictionary keyed by index, not this method.
-            foreach (TerrainChunk chunk in _chunks.Values)
-            {
-                if (chunk.Index == index)
-                    return chunk;
-            }
-            throw new ArgumentOutOfRangeException(nameof(index), index, "Chunk index not found.");
+            if (!_chunkByIndex.TryGetValue(index, out TerrainChunk chunk))
+                throw new ArgumentOutOfRangeException(nameof(index), index, "Chunk index not found.");
+            return chunk;
         }
 
         /// <summary>Returns the chunk whose bounding box contains the given position.</summary>
@@ -274,6 +274,7 @@ namespace SDFTerrain.Terrain
             long key = MakeKey(col, row);
             TerrainChunk chunk = new TerrainChunk(_nextIndex++, col, row, minX, maxX, minY, maxY);
             _chunks[key] = chunk;
+            _chunkByIndex[chunk.Index] = chunk;
             return chunk;
         }
 
@@ -284,6 +285,10 @@ namespace SDFTerrain.Terrain
         public bool RemoveChunkAtGrid(int col, int row)
         {
             long key = MakeKey(col, row);
+            if (_chunks.TryGetValue(key, out TerrainChunk chunk))
+            {
+                _chunkByIndex.Remove(chunk.Index);
+            }
             return _chunks.Remove(key);
         }
 
@@ -304,17 +309,7 @@ namespace SDFTerrain.Terrain
         /// </summary>
         public bool TryGetChunk(int index, out TerrainChunk chunk)
         {
-            foreach (TerrainChunk c in _chunks.Values)
-            {
-                if (c.Index == index)
-                {
-                    chunk = c;
-                    return true;
-                }
-            }
-
-            chunk = null;
-            return false;
+            return _chunkByIndex.TryGetValue(index, out chunk);
         }
 
         /// <summary>
